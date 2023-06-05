@@ -1,0 +1,1265 @@
+---
+title: "Modeling expression as a function of X and Y chromosome copy number"
+output: html_notebook
+---
+
+#Setup
+```{r}
+myPath <-  #ADD PATH TO GITHUB FOLDER
+#load DESeq2 library
+suppressPackageStartupMessages(library("DESeq2"))
+# library("ggpubr")
+
+#Bring in functions!
+source(file=paste0(myPath,"Scripts/Function_ASR-QQmanhattan_20221103.R"))
+source(file=paste0(myPath,"Scripts/Function_DESeqManhattan_noM_col_auto_20221103.R"))
+source(file=paste0(myPath,"Scripts/Function_allResults_20221103.R"))
+source(file=paste0(myPath,"Scripts/Function_twoGroupVenn_geneNames_20221103.R"))
+source(file=paste0(myPath,"Scripts/Function_threeGroupVenn_geneNames_20221202.R"))
+source(file=paste0(myPath,"Scripts/Function_makeSymmetric_X_Y_20221103.R"))
+source(file=paste0(myPath,"Scripts/Function_paper2_corrPlot_deming_20230419.R"))
+
+
+#Set up sex chromosome gene lists, using gencode v84 as "Gene" list
+#This gene annotation includes protein coding genes and lncRNAs
+geneAnno <- na.omit(read.delim(file=paste0(myPath,"Annotations/geneAnno_proteinCoding_lncRNA_v107_20230426.txt"), stringsAsFactors = FALSE))
+#Main "Gene" name will be ensembl84
+colnames(geneAnno)[c(2,4:6)] <- c("Gene","chr","start","stop")
+#Only include genes in both v84 and v107
+geneAnno <- geneAnno[! is.na(geneAnno$Gene),]
+geneAnno <- geneAnno[! duplicated(geneAnno$gene_name.107) & ! geneAnno$gene_name.107 %in% c("") & ! duplicated(geneAnno$Gene),]
+geneAnno_x <- geneAnno[geneAnno$chr == "chrX",]
+geneAnno_y <- geneAnno[geneAnno$chr == "chrY",]
+X_genes_all <-as.character(geneAnno_x$Gene)
+Y_genes_all <-as.character(geneAnno_y$Gene)
+sexChrom_genes <- c(X_genes_all,Y_genes_all)
+PAR1_genes <- geneAnno_x[geneAnno_x$start < 2691188,]$Gene
+PAR2_genes <- c("SPRY3","VAMP7","IL9R","WASH6P")
+PAR_genes_all <- c(PAR1_genes,PAR2_genes)
+NPX_genes <- X_genes_all[! X_genes_all %in% PAR_genes_all]
+NPY_genes <- Y_genes_all[! Y_genes_all %in% PAR_genes_all]
+autosome_genes <- geneAnno[! geneAnno$chr %in% c("chrX","chrY"),"Gene"]
+```
+
+#Bring in metadata
+```{r}
+#read in the metadata table
+metadata <-read.delim(paste0(myPath,"Linear_regressions/metadata.txt"), stringsAsFactors = FALSE)
+
+#restrict to cell type and karyotype
+metadata_lcl <- metadata[metadata$karyotype %in% c("X","XX","XXX","XXXX","XXXXY","XXXY","XXY","XXYY","XY","XYY","XYYYY") & metadata$cell_type == "LCL" & metadata$Technical_replicate == "N",]
+rownames(metadata_lcl) <- metadata_lcl$sample
+
+metadata_fib <- metadata[metadata$karyotype %in% c("X","XX","XXX","XXXX","XXXXY","XXXY","XXY","XXYY","XY","XYY","XYYYY") & metadata$cell_type == "Fib" & metadata$Technical_replicate == "N",]
+rownames(metadata_fib) <- metadata_fib$sample
+```
+
+##Processing raw RNA-seq data
+```{r, eval=FALSE}
+### The following code is used to run this analysis from the raw data. Skip below to begin with provided processed data file. ###
+## You must obtain access to the raw data through dbGaP (accession # phs002481). Download the fastq files, and run kallisto using the following command:
+# kallisto quant -i KALLISTO_INDEX_FILE -t 16 --bias --plaintext -o  /kallisto_OUTPUT_FOLDER/sampleName/ file1fastq.gz file2fastq.gz
+
+#Bring in list of Kallisto output files
+# myFileTable <- read.table(file =  "PATH TO LIST OF FILES", row.names = 1, stringsAsFactors = FALSE)
+# myFiles <- myFileTable$V2
+# names(myFiles) <- rownames(myFileTable)
+# 
+# # subset file list for the samples I will use in this analysis
+# myFiles_lcl <- myFiles[metadata_lcl$sample]
+# myFiles_fib <- myFiles[metadata_fib$sample]
+# 
+# 
+# #run tximport to bring in mapped samples
+# suppressPackageStartupMessages(library("tximport"))
+# 
+# annofile <-read.delim(file=paste0(myPath,"Annotations/annotation_with_ERCC.txt"),sep = " ")
+# tx2gene <-data.frame("TXNAME" = annofile$transcript_id,"GENEID" = annofile$gene_name)
+# 
+# txi_lcl <- tximport(myFiles_lcl, type = "kallisto", tx2gene = tx2gene)
+# save(txi_lcl, file=paste0(myPath,"Linear_regressions/LCLs/txi_lcl.rda"))
+# load(file=paste0(myPath,"Linear_regressions/LCLs/txi_lcl.rda"))
+# write.table(x=txi_lcl$counts, file="lcl_txi_counts.txt", sep="\t", quote=FALSE, row.names = TRUE, col.names = TRUE)
+# write.table(x=txi_lcl$abundance, file="lcl_txi_TPM.txt", sep="\t", quote=FALSE, row.names = TRUE, col.names = TRUE)
+#
+# txi_fib <- tximport(myFiles_fib, type = "kallisto", tx2gene = tx2gene)
+# save(txi_fib, file=paste0(myPath,"Linear_regressions/Fibroblasts/txi_fib.rda"))
+# load(file=paste0(myPath,"Linear_regressions/Fibroblasts/txi_fib.rda"))
+# write.table(x=txi_fib$counts, file="fib_txi_counts.txt", sep="\t", quote=FALSE, row.names = TRUE, col.names = TRUE)
+# write.table(x=txi_fib$abundance, file="fib_txi_TPM.txt", sep="\t", quote=FALSE, row.names = TRUE, col.names = TRUE)
+#
+# #Double check that sample tables match list of samples in txi
+# sample_table_lcl <- metadata_lcl[colnames(txi_lcl$counts), c("x_count","y_count","batch_libprep")]
+# sample_table_fib <- metadata_fib[colnames(txi_fib$counts), c("x_count","y_count","batch_libprep")]
+```
+
+#Bring in processed data
+```{r}
+#Bring in counts and TPM files
+lcl_counts <- read.delim(file=paste0(myPath,"Linear_regressions/LCLs/lcl_txi_counts.txt"), check.names = FALSE)
+lcl_TPM <- read.delim(file=paste0(myPath,"Linear_regressions/LCLs/lcl_txi_TPM.txt"), check.names = FALSE)
+fib_counts <- read.delim(file=paste0(myPath,"Linear_regressions/Fibroblasts/fib_txi_counts.txt"), check.names=FALSE)
+fib_TPM <- read.delim(file=paste0(myPath,"Linear_regressions/Fibroblasts/fib_txi_TPM.txt"), check.names=FALSE)
+
+#Get list of expressed genes in the cell type of interest
+XX_sample_names_lcl <- metadata_lcl[metadata_lcl$karyotype == "XX", "sample"]
+XY_sample_names_lcl <- metadata_lcl[metadata_lcl$karyotype == "XY", "sample"]
+XX_sample_names_fib <- metadata_fib[metadata_fib$karyotype == "XX", "sample"]
+XY_sample_names_fib <- metadata_fib[metadata_fib$karyotype == "XY", "sample"]
+
+#function to get expressed genes - median TPM in either XX or XY samples has to be at least 1
+#once you run this and save, you can save time by just loading the file using the code below:
+# source(file=paste0(myPath,"Scripts/Function_tpm1_genes_xx_xy_median_20221103.R"))
+# lcl_expressed <- tpm1_genes_xx_xy_median(tximport_file = txi_lcl,XX_samples = XX_sample_names_lcl, XY_samples = XY_sample_names_lcl)
+# save(lcl_expressed, file=paste0(myPath,"Linear_regressions/LCLs/lcl_expressed.rda"))
+load(file=paste0(myPath,"Linear_regressions/LCLs/lcl_expressed.rda"))
+
+# fib_expressed <- tpm1_genes_xx_xy_median(tximport_file = txi_fib, XX_samples = XX_sample_names_fib, XY_samples = XY_sample_names_fib )
+# save(fib_expressed, file=paste0(myPath,"Linear_regressions/Fibroblasts/fib_expressed.rda"))
+load(file=paste0(myPath,"Linear_regressions/Fibroblasts/fib_expressed.rda"))
+```
+
+#Do linear regressions with DESEQ2
+```{r}
+### THIS CODE CHUNK TAKES A LITTLE LONGER TO RUN. RUN IT ONCE AND THEN COMMENT OUT THE CODE AND LOAD FROM THE R DATA FILES.
+dds_x_y_lcl <- DESeqDataSetFromMatrix(round(lcl_counts), colData = sample_table_lcl, design = ~ batch_libprep + y_count + x_count)
+dds_x_y_lcl <- DESeq(dds_x_y_lcl, parallel = TRUE)
+save(dds_x_y_lcl, file=paste0(myPath,"Linear_regressions/LCLs/dds_x_y_lcl.rda"))
+#once you run this and save, you can save time by just loading the file using the code below:
+# load(file=paste0(myPath,"Linear_regressions/LCLs/dds_x_y_lcl.rda"))
+
+lcl_normCounts <- counts(dds_x_y_lcl, normalized=TRUE)
+# write.table(x=lcl_normCounts, file="lcl_normCounts.txt", sep="\t", quote=FALSE, col.names = TRUE, row.names = TRUE)
+
+dds_x_y_fib <- DESeqDataSetFromTximport(round(fib_counts), colData = sample_table_fib, design = ~ batch_libprep + y_count + x_count)
+dds_x_y_fib <- DESeq(dds_x_y_fib, parallel = TRUE)
+save(dds_x_y_fib, file=paste0(myPath,"Linear_regressions/Fibroblasts/dds_x_y_fib.rda"))
+# load(file=paste0(myPath,"Linear_regressions/Fibroblasts/dds_x_y_fib.rda"))
+
+fib_normCounts <- counts(dds_x_y_fib, normalized=TRUE)
+# write.table(x=fib_normCounts, file="fib_normCounts.txt", sep="\t", quote=FALSE, col.names = TRUE, row.names = TRUE)
+```
+
+## lcl X Regression Results
+```{r}
+#Run results (Design ~ batch_libprep + y_count + x_count)
+lcl_x_results <- allResults(mydds = dds_x_y_lcl, myVar = "x_count", myAnno = geneAnno, expGenes = lcl_expressed, myTitle = "lcl_x_count",myalpha = 0.05, pdfWidth = 3.5, pdfHeight = 3, myYlim = c(-2,1.5), highlight_col = c("#D95F0290","#feb78190"), bg_col=c("#D3D3D340","#D3D3D340"))
+```
+
+## lcl Y Regression Results
+```{r}
+#Run results (Design ~ batch_libprep + y_count + x_count)
+lcl_y_results <- allResults(mydds = dds_x_y_lcl, myVar = "y_count", myAnno = geneAnno, expGenes = lcl_expressed, myTitle = "lcl_y_count",myalpha = 0.05, pdfWidth = 3.5, pdfHeight = 3, myYlim = c(-2,1.5), highlight_col = c("#6e02d990","#bf81fe90"), bg_col=c("#D3D3D340","#D3D3D340"))
+```
+## fib X Regression Results
+```{r}
+#Run results (Design ~ batch_libprep + y_count + x_count)
+fib_x_results <- allResults(mydds = dds_x_y_fib, myVar = "x_count", myAnno = geneAnno, expGenes = fib_expressed, myTitle = "fib_x_count",myalpha = 0.05, pdfWidth = 3.5, pdfHeight = 3, myYlim = c(-2,1.5),highlight_col = c("#D95F0290","#feb78190"), bg_col=c("#D3D3D340","#D3D3D340"))
+```
+
+## fib Y Regression Results
+```{r}
+#Run results (Design ~ batch_libprep + y_count + x_count)
+fib_y_results <- allResults(mydds = dds_x_y_fib, myVar = "y_count", myAnno = geneAnno, expGenes = fib_expressed, myTitle = "fib_y_count",myalpha = 0.05, pdfWidth = 3.5, pdfHeight = 3, myYlim = c(-2,1.5),highlight_col = c("#6e02d990","#bf81fe90"), bg_col=c("#D3D3D340","#D3D3D340"))
+```
+
+## Put together all the results for supplemental table
+```{r}
+#Merge results and select only gene_name.107, in column 8, to work with!
+lcl_auto_results <- merge(x = lcl_x_results$res_anno_exp_auto[,c(2:7,14)], y = lcl_y_results$res_anno_exp_auto[,c(2:7,14)], by="gene_name.107", all = TRUE)
+rownames(lcl_auto_results) <- lcl_auto_results$gene_name.107
+#rearrange so "Gene" now refers to ensembl 107 names.
+lcl_auto_results_mod <- lcl_auto_results[,c("gene_name.107","baseMean.x","log2FoldChange.x","lfcSE.x",
+                                        "stat.x","pvalue.x","padj.x","log2FoldChange.y",
+                                        "lfcSE.y","stat.y","pvalue.y","padj.y")]
+colnames(lcl_auto_results_mod) <- c("Gene","lcl_baseMean","lcl_log2FC_X","lcl_lfcSE_X",
+                                        "lcl_stat_X","lcl_pvalue_X","lcl_padj_X","lcl_log2FC_Y",
+                                        "lcl_lfcSE_Y","lcl_stat_Y","lcl_pvalue_Y","lcl_padj_Y")
+
+fib_auto_results <- merge(x=fib_x_results$res_anno_exp_auto[,c(2:7,14)], y=fib_y_results$res_anno_exp_auto[,c(2:7,14)], by="gene_name.107", all=TRUE)
+rownames(fib_auto_results) <- fib_auto_results$gene_name.107
+#rearrange so "Gene" now refers to ensembl 107 names.
+fib_auto_results_mod <- fib_auto_results[,c("gene_name.107","baseMean.x","log2FoldChange.x","lfcSE.x",
+                                        "stat.x","pvalue.x","padj.x","log2FoldChange.y",
+                                        "lfcSE.y","stat.y","pvalue.y","padj.y")]
+colnames(fib_auto_results_mod) <- c("Gene","fib_baseMean","fib_log2FC_X","fib_lfcSE_X",
+                                        "fib_stat_X","fib_pvalue_X","fib_padj_X","fib_log2FC_Y",
+                                        "fib_lfcSE_Y","fib_stat_Y","fib_pvalue_Y","fib_padj_Y")
+
+lcl_fib_auto_results <- merge(x=lcl_auto_results_mod, y=fib_auto_results_mod, by="Gene", all=TRUE)
+lcl_fib_auto_results_anno <- merge(x=lcl_fib_auto_results, y=geneAnno[,c("gene_name.107","chr","start","stop","gene_id.107","gene_type.107","Gene","gene_id.84","gene_type.84")], all.x=TRUE, by.x="Gene",by.y="gene_name.107")
+
+
+write.table(x = lcl_fib_auto_results_anno, file="lcl_fib_XandY_results_auto_expressed.txt", quote=FALSE, row.names = FALSE, col.names = TRUE, sep="\t")
+```
+
+#Run batch corrections
+```{r}
+library(limma)
+
+#LCLs
+#For plotting, we will use the normalized counts corrected for the other covariates.
+vst_dds_x_y_lcl <- vst(dds_x_y_lcl, blind=FALSE)
+
+#control for batch and Y copy number
+vst_dds_x_y_lcl_batch_y <- vst_dds_x_y_lcl
+design0 <- model.matrix(~sample_table_lcl$x_count)
+assay(vst_dds_x_y_lcl_batch_y) <- removeBatchEffect(x = assay(vst_dds_x_y_lcl_batch_y), batch = sample_table_lcl$batch_libprep, batch2 = sample_table_lcl$y_count, design=design0)
+
+#control for batch and X copy number
+vst_dds_x_y_lcl_batch_x <- vst_dds_x_y_lcl
+design0 <- model.matrix(~sample_table_lcl$y_count)
+assay(vst_dds_x_y_lcl_batch_x) <- removeBatchEffect(x = assay(vst_dds_x_y_lcl_batch_x), batch = sample_table_lcl$batch_libprep, batch2 = sample_table_lcl$x_count, design=design0)
+
+##Fibroblasts
+#For plotting, we will use the normalized counts corrected for the other covariates.
+# vst_dds_x_y_fib <- vst(dds_x_y_fib, blind=FALSE)
+# 
+# #control for batch and Y copy number
+# vst_dds_x_y_fib_batch_y <- vst_dds_x_y_fib
+# design0 <- model.matrix(~sample_table_fib$x_count)
+# assay(vst_dds_x_y_fib_batch_y) <- removeBatchEffect(x = assay(vst_dds_x_y_fib_batch_y), batch = sample_table_fib$batch_libprep, batch2 = sample_table_fib$y_count, design=design0)
+# 
+# #control for batch and X copy number
+# vst_dds_x_y_fib_batch_x <- vst_dds_x_y_fib
+# design0 <- model.matrix(~sample_table_fib$y_count)
+# assay(vst_dds_x_y_fib_batch_x) <- removeBatchEffect(x = assay(vst_dds_x_y_fib_batch_x), batch = sample_table_fib$batch_libprep, batch2 = sample_table_fib$x_count, design=design0)
+```
+
+# Plotting individual genes
+```{r}
+myOrange <- "#d95f02"
+myOrange_light <- "#d95f0220"
+myPurple <- "#7570B3"
+myPurple_light <- "#7570B320"
+
+library(ggplot2)
+
+ggGenePlot_xcount <- function(Gene, normCounts, metadata, resTable, prefix, adjustLabel){
+  mySlope <- resTable[resTable$Gene == Gene,"log2FoldChange"]
+  mySlope_print <- formatC(x=mySlope, digits=2)
+  myP <- formatC(x=resTable[resTable$Gene == Gene,"padj"], digits=2, format = "e")
+  expn <- normCounts[Gene,]
+  
+  #Get intercept - mean of samples with one X
+  oneX <- rownames(metadata[metadata$x_count == 1,])
+  myInt <- mean(expn[oneX])
+  myInt_adj <- myInt - mySlope
+  
+  #merge Gene data with metadata
+  plot_data <- data.frame(metadata,expn)
+  if(adjustLabel == "bottomLeft"){
+    yloc <- min(plot_data$expn)
+    xloc <- 0.7
+    myV <- 0
+    myH <- 0
+  } 
+  if(adjustLabel == "bottomRight"){
+    yloc <- min(plot_data$expn)
+    xloc <- 4.3
+    myV <- 0
+    myH <- 1
+  }
+  if(adjustLabel == "topLeft"){
+    yloc <- max(plot_data$expn)
+    xloc <- 0.7
+    myV <- 1
+    myH <- 0
+  }
+  if(adjustLabel == "topRight"){
+    yloc <- max(plot_data$expn)
+    xloc <- 4.3
+    myV <- 1
+    myH <- 1
+  }
+  pdf(file=paste0(prefix,"_",Gene,"_Plot.pdf"), width=1.5, height=1.5)
+  p <- ggplot(data=plot_data, mapping = aes(x=x_count, y=expn)) +
+    geom_jitter(color="#00000080", position=position_jitter(0.2), size=1, stroke=0) +
+    geom_smooth(method = "lm", color=myOrange, size=0.25, fill=myOrange_light, fullrange=TRUE) +
+    # geom_abline(slope = mySlope, intercept = myInt_adj, color="Orange", lty=2) +
+    annotate(
+      geom = "text", 
+      x = xloc, 
+      y = yloc,
+      label = paste0('log2FC per X = ', mySlope_print, '\nFDR = ', myP),      hjust = myH, 
+      vjust = myV,
+      size=1.5
+      ) +
+    labs( 
+      x= "Chr X copy number",
+      y= "log2(normalized counts)",
+      title = Gene
+      ) +
+    theme_classic(base_size = 8) +
+    theme(
+      plot.title = ggtext::element_markdown(hjust = 0.5, face = "italic"),
+      axis.text = element_text(color = "black"), 
+      axis.ticks = element_line(color = "black", size = 0.25), 
+      axis.line = element_line(size = 0.25),
+      aspect.ratio=1, 
+      ) +
+    ylim(min(plot_data$expn)-0.1,max(plot_data$expn)+0.1) + xlim(0.7,4.3)
+  print(p)
+  dev.off()
+}
+
+ggGenePlot_xcount_adj <- function(Gene, normCounts, metadata, resTable, prefix, adjustLabel, ymin = 0, ymax=10){
+
+  mySlope <- resTable[resTable$Gene == Gene,"log2FoldChange"]
+  mySlope_print <- formatC(x=mySlope, digits=2)
+  myP <- formatC(x=resTable[resTable$Gene == Gene,"padj"], digits=2, format = "e")
+  expn <- normCounts[Gene,]
+  
+  #Get intercept - mean of samples with one X
+  oneX <- rownames(metadata[metadata$x_count == 1,])
+  myInt <- mean(expn[oneX])
+  myInt_adj <- myInt - mySlope
+  
+  #merge Gene data with metadata
+  plot_data <- data.frame(metadata,expn)
+  if(adjustLabel == "bottomLeft"){
+    yloc <- ymin
+    xloc <- 0.7
+    myV <- 0
+    myH <- 0
+  } 
+  if(adjustLabel == "bottomRight"){
+    yloc <- ymin
+    xloc <- 4.3
+    myV <- 0
+    myH <- 1
+  }
+  if(adjustLabel == "topLeft"){
+    yloc <- ymax
+    xloc <- 0.7
+    myV <- 1
+    myH <- 0
+  }
+  if(adjustLabel == "topRight"){
+    yloc <- ymax
+    xloc <- 4.3
+    myV <- 1
+    myH <- 1
+  }
+  pdf(file=paste0(prefix,"_",Gene,"_Plot.pdf"), width=1.5, height=1.5)
+  p <- ggplot(data=plot_data, mapping = aes(x=x_count, y=expn)) +
+    geom_jitter(color="#00000080", position=position_jitter(0.2), size=1, stroke=0) +
+    geom_smooth(method = "lm", color=myOrange, size=0.25, fill=myOrange_light, fullrange=TRUE) +
+    # geom_abline(slope = mySlope, intercept = myInt_adj, color="Orange", lty=2) +
+    annotate(
+      geom = "text", 
+      x = xloc, 
+      y = yloc,
+      label = paste0('log2FC per X = ', mySlope_print, '\nFDR = ', myP),      hjust = myH, 
+      vjust = myV,
+      size=1.5
+      ) +
+    labs( 
+      x= "Chr X copy number",
+      y= "log2(normalized counts)",
+      title = Gene
+      ) +
+    theme_classic(base_size = 8) +
+    theme(
+      plot.title = ggtext::element_markdown(hjust = 0.5, face = "italic"),
+      axis.text = element_text(color = "black"), 
+      axis.ticks = element_line(color = "black", size = 0.25), 
+      axis.line = element_line(size = 0.25),
+      aspect.ratio=1, 
+      ) +
+    ylim(ymin,ymax) + xlim(0.7,4.3)
+  print(p)
+  dev.off()
+}
+
+ggGenePlot_ycount <- function(Gene, normCounts, metadata, resTable, prefix, adjustLabel){
+  
+  mySlope <- resTable[resTable$Gene == Gene,"log2FoldChange"]
+  mySlope_print <- formatC(x=mySlope, digits=2)
+  myP <- formatC(x=resTable[resTable$Gene == Gene,"padj"], digits=2, format = "e")
+  expn <- normCounts[Gene,]
+  
+  #Get intercept - mean of samples with 0 Y
+  zeroY <- rownames(metadata[metadata$y_count == 0,])
+  myInt <- mean(expn[zeroY])
+
+  #merge Gene data with metadata
+  plot_data <- data.frame(metadata,expn)
+  if(adjustLabel == "bottomLeft"){
+    yloc <- min(plot_data$expn)
+    xloc <- -0.3
+    myV <- 0
+    myH <- 0
+  } 
+  if(adjustLabel == "bottomRight"){
+    yloc <- min(plot_data$expn)
+    xloc <- 4.3
+    myV <- 0
+    myH <- 1
+  }
+  if(adjustLabel == "topLeft"){
+    yloc <- max(plot_data$expn)
+    xloc <- -0.3
+    myV <- 1
+    myH <- 0
+  }
+  if(adjustLabel == "topRight"){
+    yloc <- max(plot_data$expn)
+    xloc <- 4.3
+    myV <- 1
+    myH <- 1
+  }
+  pdf(file=paste0(prefix,"_",Gene,"_Plot.pdf"), width=1.5, height=1.5)
+  p <- ggplot(data=plot_data, mapping = aes(x=y_count, y=expn)) +
+    geom_jitter(color="#00000080", position=position_jitter(0.2), size=1, stroke=0) +
+        geom_smooth(method = "lm", color=myPurple, size=0.25, fill=myPurple_light, fullrange=TRUE) +
+    annotate(
+      geom = "text", 
+      x = xloc, 
+      y = yloc,
+      label = paste0('log2FC per Y = ', mySlope_print, '\nFDR = ', myP),      hjust = myH, 
+      vjust = myV,
+      size=1.5
+      ) +
+    labs( 
+      x= "Chr Y copy number",
+      y= "log2(normalized counts)",
+      title = Gene
+      ) +
+    theme_classic(base_size = 8) +
+    theme(
+      plot.title = ggtext::element_markdown(hjust = 0.5, face = "italic"),
+      axis.text = element_text(color = "black"), 
+      axis.ticks = element_line(color = "black", size = 0.25), 
+      axis.line = element_line(size = 0.25),
+      aspect.ratio=1, 
+      ) +
+    ylim(min(plot_data$expn)-0.1,max(plot_data$expn)+0.1) + xlim(-0.3,4.3)
+  print(p)
+  dev.off()
+}
+
+ggGenePlot_ycount_adj <- function(Gene, normCounts, metadata, resTable, prefix, adjustLabel, ymin = 0, ymax=10){
+  
+  mySlope <- resTable[resTable$Gene == Gene,"log2FoldChange"]
+  mySlope_print <- formatC(x=mySlope, digits=2)
+  myP <- formatC(x=resTable[resTable$Gene == Gene,"padj"], digits=2, format = "e")
+  expn <- normCounts[Gene,]
+  
+  #Get intercept - mean of samples with 0 Y
+  zeroY <- rownames(metadata[metadata$y_count == 0,])
+  myInt <- mean(expn[zeroY])
+
+  #merge Gene data with metadata
+  plot_data <- data.frame(metadata,expn)
+  if(adjustLabel == "bottomLeft"){
+    yloc <- ymin
+    xloc <- -0.3
+    myV <- 0
+    myH <- 0
+  } 
+  if(adjustLabel == "bottomRight"){
+    yloc <- ymin
+    xloc <- 4.3
+    myV <- 0
+    myH <- 1
+  }
+  if(adjustLabel == "topLeft"){
+    yloc <- ymax
+    xloc <- -0.3
+    myV <- 1
+    myH <- 0
+  }
+  if(adjustLabel == "topRight"){
+    yloc <- ymax
+    xloc <- 4.3
+    myV <- 1
+    myH <- 1
+  }
+  pdf(file=paste0(prefix,"_",Gene,"_Plot.pdf"), width=1.5, height=1.5)
+  p <- ggplot(data=plot_data, mapping = aes(x=y_count, y=expn)) +
+    geom_jitter(color="#00000080", position=position_jitter(0.2), size=1, stroke=0) +
+        geom_smooth(method = "lm", color=myPurple, size=0.25, fill=myPurple_light, fullrange=TRUE) +
+    annotate(
+      geom = "text", 
+      x = xloc, 
+      y = yloc,
+      label = paste0('log2FC per Y = ', mySlope_print, '\nFDR = ', myP),      hjust = myH, 
+      vjust = myV,
+      size=1.5
+      ) +
+    labs( 
+      x= "Chr Y copy number",
+      y= "log2(normalized counts)",
+      title = Gene
+      ) +
+    theme_classic(base_size = 8) +
+    theme(
+      plot.title = ggtext::element_markdown(hjust = 0.5, face = "italic"),
+      axis.text = element_text(color = "black"), 
+      axis.ticks = element_line(color = "black", size = 0.25), 
+      axis.line = element_line(size = 0.25),
+      aspect.ratio=1, 
+      ) +
+    ylim(ymin,ymax) + xlim(-0.3,4.3)
+  print(p)
+  dev.off()
+}
+
+#LCLs
+#For X response: make gene plots using normalized log2 counts where effects of batch and Y_count have been removed.
+ggGenePlot_xcount(Gene = "ZNF358", normCounts = as.matrix(assay(vst_dds_x_y_lcl_batch_y)), metadata = sample_table_lcl, resTable = lcl_x_results$res_anno_exp, prefix = "LCL_x", adjustLabel = "bottomRight")
+
+ggGenePlot_xcount_adj(Gene = "TEAD4", normCounts = as.matrix(assay(vst_dds_x_y_lcl_batch_y)), metadata = sample_table_lcl, resTable = lcl_x_results$res_anno_exp, prefix = "LCL_x", adjustLabel = "topRight", ymin=3, ymax=11)
+
+#For Y response: make gene plots using normalized log2 counts where effects of batch and X_count have been removed.
+ggGenePlot_ycount_adj(Gene = "HENMT1", normCounts = as.matrix(assay(vst_dds_x_y_lcl_batch_x)), metadata = sample_table_lcl, resTable = lcl_y_results$res_anno_exp, prefix = "LCL_y", adjustLabel = "bottomLeft", ymin=3, ymax=10)
+
+ggGenePlot_ycount(Gene = "KLHL22", normCounts = as.matrix(assay(vst_dds_x_y_lcl_batch_x)), metadata = sample_table_lcl, resTable = lcl_y_results$res_anno_exp, prefix = "LCL_y", adjustLabel = "bottomRight")
+```
+
+# Comparing LCL and fibroblasts
+```{r}
+#First get autosomal genes expressed in BOTH LCLs and fibroblasts
+LCL_and_Fib_exp_auto <- lcl_fib_auto_results[(! is.na(lcl_fib_auto_results$lcl_padj_X)) & (! is.na(lcl_fib_auto_results$fib_padj_X)),] 
+
+#Venn diagram
+#X-responsive gene overlap
+twoGroupVenn_geneNames(setA = LCL_and_Fib_exp_auto[LCL_and_Fib_exp_auto$lcl_padj_X < 0.05, "Gene"], setAname = "LCL", setB = LCL_and_Fib_exp_auto[LCL_and_Fib_exp_auto$fib_padj_X<0.05,"Gene"], setBname = "Fib", expGenes = LCL_and_Fib_exp_auto$Gene, filename = "LCL_Fib_Auto_Intersect_X.pdf")
+
+lcl_fib_x_sig_intersect <- LCL_and_Fib_exp_auto[LCL_and_Fib_exp_auto$lcl_padj_X < 0.05 & LCL_and_Fib_exp_auto$fib_padj_X < 0.05,]
+write.table(x=lcl_fib_x_sig_intersect, file="lcl_fib_x_sig_intersect.txt", quote=FALSE, sep="\t")
+
+#lcl sig only
+lcl_only_x_sig <- setdiff(lcl_fib_auto_results[lcl_fib_auto_results$lcl_padj_X < 0.05 & ! is.na(lcl_fib_auto_results$lcl_padj_X), "Gene"],
+                          LCL_and_Fib_exp_auto$Gene)
+
+#fib sig only
+fib_only_x_sig <- setdiff(lcl_fib_auto_results[lcl_fib_auto_results$fib_padj_X < 0.05 & ! is.na(lcl_fib_auto_results$fib_padj_X), "Gene"],
+                          LCL_and_Fib_exp_auto$Gene)
+
+#Correlation plots of the overlaps
+myData <- na.omit(data.frame("x" = lcl_fib_x_sig_intersect[, "lcl_log2FC_X"], "x_err" = lcl_fib_x_sig_intersect[, "lcl_lfcSE_X"],
+                             "y"=lcl_fib_x_sig_intersect[, "fib_log2FC_X"], "y_err"=lcl_fib_x_sig_intersect[, "fib_lfcSE_X"], 
+                             row.names = lcl_fib_x_sig_intersect$Gene))
+
+
+paper2_corrPlot_deming_err(myData = myData, myTitle = "LCL_Fib_Xresponsive_intersect_corPlotdeming.pdf", myWidth = 1.5, myHeight = 1.5, myXlab = "LCL log2FC per Chr X", myYlab = "Fib log2FC per Chr X", demingBehind = TRUE, pointsCol = orange_pointsCol, myYlim = c(-1.25,1.25), myXlim = c(-1.25,1.25), myPlotTitle = "X_resp_overlap")
+
+
+#percentage of overlapping X responsive genes
+#LCLs:
+100* (dim(lcl_fib_x_sig_intersect)[1]/dim( LCL_and_Fib_exp_auto[LCL_and_Fib_exp_auto$lcl_padj_X < 0.05, ])[1])
+#Fibs:
+100* (dim(lcl_fib_x_sig_intersect)[1]/dim( LCL_and_Fib_exp_auto[LCL_and_Fib_exp_auto$fib_padj_X < 0.05, ])[1])
+
+
+#Y overlap
+twoGroupVenn_geneNames(setA = LCL_and_Fib_exp_auto[LCL_and_Fib_exp_auto$lcl_padj_Y < 0.05, "Gene"], setAname = "LCL", setB = LCL_and_Fib_exp_auto[LCL_and_Fib_exp_auto$fib_padj_Y<0.05,"Gene"], setBname = "Fib", expGenes = LCL_and_Fib_exp_auto$Gene, filename = "LCL_Fib_Auto_Intersect_Y.pdf")
+
+lcl_fib_y_sig_intersect <- LCL_and_Fib_exp_auto[LCL_and_Fib_exp_auto$lcl_padj_Y < 0.05 & LCL_and_Fib_exp_auto$fib_padj_Y < 0.05,]
+
+#lcl sig only
+lcl_only_y_sig <- setdiff(lcl_fib_auto_results[lcl_fib_auto_results$lcl_padj_Y < 0.05 & ! is.na(lcl_fib_auto_results$lcl_padj_Y), "Gene"],
+                          LCL_and_Fib_exp_auto$Gene)
+
+#fib sig only
+fib_only_y_sig <- setdiff(lcl_fib_auto_results[lcl_fib_auto_results$fib_padj_Y < 0.05 & ! is.na(lcl_fib_auto_results$fib_padj_Y), "Gene"],LCL_and_Fib_exp_auto$Gene)
+
+#Correlation plots of the overlaps
+myData <- data.frame("x" = lcl_fib_y_sig_intersect[, "lcl_log2FC_Y"], "x_err" = lcl_fib_y_sig_intersect[, "lcl_lfcSE_Y"],
+                     "y"=lcl_fib_y_sig_intersect[, "fib_log2FC_Y"], "y_err"=lcl_fib_y_sig_intersect[, "fib_lfcSE_Y"])
+
+paper2_corrPlot_deming_err(myData = myData, myTitle = "LCL_Fib_Yresponsive_intersect_corPlotdeming.pdf", myWidth = 1.5, myHeight = 1.5, myXlab = "LCL log2FC per Chr Y", myYlab = "Fib log2FC per Chr Y", demingBehind = TRUE, pointsCol = purple_pointsCol, myYlim = c(-1.25,1.25), myXlim = c(-1.25,1.25), myPlotTitle = "Y_resp_overlap")
+
+#%overlapping y responsive genes
+#LCLs:
+100* (dim(lcl_fib_y_sig_intersect)[1]/dim( LCL_and_Fib_exp_auto[LCL_and_Fib_exp_auto$lcl_padj_Y < 0.05, ])[1])
+#Fibs:
+100* (dim(lcl_fib_y_sig_intersect)[1]/dim( LCL_and_Fib_exp_auto[LCL_and_Fib_exp_auto$fib_padj_Y < 0.05, ])[1])
+
+
+#ALL GENES! CHR X RESPONSE LCL AND FIB FOR GENES EXP IN BOTH CELL TYPES!
+myData <- data.frame("x" = LCL_and_Fib_exp_auto[, "lcl_log2FC_X"], "x_err" = LCL_and_Fib_exp_auto[, "lcl_lfcSE_X"], 
+                     "y"=LCL_and_Fib_exp_auto[, "fib_log2FC_X"], "y_err"=LCL_and_Fib_exp_auto[, "fib_lfcSE_X"])
+
+paper2_corrPlot_deming_err(myData = myData, myTitle = "LCL_Fib_X_resp_allExp_genes_corPlotdeming.pdf", myWidth = 3, myHeight = 3, myXlab = "LCL log2FC per Chr X", myYlab = "Fib log2FC per Chr X", demingBehind = TRUE, pointsCol = orange_pointsCol, myYlim = c(-1.5,1.5), myXlim = c(-1.5,1.5))
+
+
+#Y RESPONSE!!
+myData <- data.frame("x" = LCL_and_Fib_exp_auto[, "lcl_log2FC_Y"], "x_err" = LCL_and_Fib_exp_auto[, "lcl_lfcSE_Y"],
+                     "y"=LCL_and_Fib_exp_auto[, "fib_log2FC_Y"], "y_err"=LCL_and_Fib_exp_auto[, "fib_lfcSE_Y"])
+
+  paper2_corrPlot_deming_err(myData = myData, myTitle = "LCL_Fib_Y_resp_allExp_genes_corPlotdeming.pdf", myWidth = 3, myHeight = 3, myXlab = "LCL log2FC per Chr Y", myYlab = "Fib log2FC per Chr Y", demingBehind = TRUE, pointsCol = purple_pointsCol, myYlim = c(-1.5,1.5), myXlim = c(-1.5,1.5))
+```
+
+# Comparing X and Y response
+##Setup
+```{r}
+#Venn diagram
+#LCLs 
+#X- and Y-responsive gene overlap
+twoGroupVenn_geneNames(setA = lcl_x_results$res_anno_exp_sig_auto$Gene, setAname = "X_responsive", setB = lcl_y_results$res_anno_exp_sig_auto$Gene, setBname = "Y_responsive", expGenes = lcl_expressed$expAutoGenes, filename = "X_Y_Auto_Intersect_lcl.pdf")
+
+x_and_y_lcl <- intersect(lcl_x_results$res_anno_exp_sig_auto$Gene, lcl_y_results$res_anno_exp_sig_auto$Gene)
+x_only_lcl <- setdiff(lcl_x_results$res_anno_exp_sig_auto$Gene, lcl_y_results$res_anno_exp_sig_auto$Gene)
+y_only_lcl <- setdiff( lcl_y_results$res_anno_exp_sig_auto$Gene, lcl_x_results$res_anno_exp_sig_auto$Gene)
+x_or_y_lcl <- union(lcl_x_results$res_anno_exp_sig_auto$Gene, lcl_y_results$res_anno_exp_sig_auto$Gene)
+neither_lcl <- setdiff(lcl_x_results$res_anno_exp$Gene,x_or_y_lcl)
+
+#fibs 
+#X- and Y-responsive gene overlap
+twoGroupVenn_geneNames(setA = fib_x_results$res_anno_exp_sig_auto$Gene, setAname = "X_responsive", setB = fib_y_results$res_anno_exp_sig_auto$Gene, setBname = "Y_responsive", expGenes = fib_expressed$expAutoGenes, filename = "X_Y_Auto_Intersect_fib.pdf")
+
+x_and_y_fib <- intersect(fib_x_results$res_anno_exp_sig_auto$Gene, fib_y_results$res_anno_exp_sig_auto$Gene)
+x_only_fib <- setdiff(fib_x_results$res_anno_exp_sig_auto$Gene, fib_y_results$res_anno_exp_sig_auto$Gene)
+y_only_fib <- setdiff( fib_y_results$res_anno_exp_sig_auto$Gene, fib_x_results$res_anno_exp_sig_auto$Gene)
+x_or_y_fib <- union(fib_x_results$res_anno_exp_sig_auto$Gene, fib_y_results$res_anno_exp_sig_auto$Gene)
+neither_fib <- setdiff(fib_x_results$res_anno_exp$Gene,x_or_y_fib)
+```
+
+##all genes
+```{r}
+myData <- data.frame("x" = lcl_x_results$res_anno_exp_auto[, "log2FoldChange"], "x_err" = lcl_x_results$res_anno_exp_auto[, "lfcSE"], "y"=lcl_y_results$res_anno_exp_auto[lcl_x_results$res_anno_exp_auto$Gene, "log2FoldChange"],"y_err" = lcl_y_results$res_anno_exp_auto[lcl_x_results$res_anno_exp_auto$Gene,"lfcSE"])
+
+paper2_corrPlot_deming_err(myData = myData, myTitle = "LCL_X_Y_allExp_corPlots_deming_error.pdf", myWidth = 1.5, myHeight = 1.5, myXlab = "Log2FC per Chr X", myYlab = "Log2FC per Chr Y", demingBehind = TRUE, pointsCol = default_pointsCol, myYlim = c(-2,2), myXlim = c(-2,2))
+
+##Fibroblasts
+myData <- data.frame("x" = fib_x_results$res_anno_exp_auto[, "log2FoldChange"], "x_err" = fib_x_results$res_anno_exp_auto[, "lfcSE"], "y"=fib_y_results$res_anno_exp_auto[fib_x_results$res_anno_exp_auto$Gene, "log2FoldChange"],"y_err" = fib_y_results$res_anno_exp_auto[fib_x_results$res_anno_exp_auto$Gene,"lfcSE"])
+
+paper2_corrPlot_deming_err(myData = myData, myTitle = "fib_X_Y_allExp_corPlots_deming_error.pdf", myWidth = 1.5, myHeight = 1.5, myXlab = "Log2FC per Chr X", myYlab = "Log2FC per Chr Y", demingBehind = TRUE, pointsCol = default_pointsCol, myYlim = c(-2,2), myXlim = c(-2,2))
+```
+
+##X and Y
+```{r}
+myData <- data.frame("x" = lcl_x_results$res_anno_exp_auto[x_and_y_lcl, "log2FoldChange"], "x_err" = lcl_x_results$res_anno_exp_auto[x_and_y_lcl, "lfcSE"], "y"=lcl_y_results$res_anno_exp_auto[x_and_y_lcl, "log2FoldChange"],"y_err" = lcl_y_results$res_anno_exp_auto[x_and_y_lcl,"lfcSE"])
+
+paper2_corrPlot_deming_err(myData = myData, myTitle = "LCL_X_Y_overlap_corPlots_deming_error.pdf", myWidth = 1.5, myHeight = 1.5, myXlab = "Log2FC per Chr X", myYlab = "Log2FC per Chr Y", demingBehind = TRUE, pointsCol = default_pointsCol, myYlim = c(-2,2), myXlim = c(-2,2))
+
+##Fibroblasts
+myData <- data.frame("x" = fib_x_results$res_anno_exp_auto[x_and_y_fib, "log2FoldChange"], "x_err" = fib_x_results$res_anno_exp_auto[x_and_y_fib, "lfcSE"], "y"=fib_y_results$res_anno_exp_auto[x_and_y_fib, "log2FoldChange"],"y_err" = fib_y_results$res_anno_exp_auto[x_and_y_fib,"lfcSE"])
+
+paper2_corrPlot_deming_err(myData = myData, myTitle = "fib_X_Y_overlap_corPlots_deming_error.pdf", myWidth = 1.5, myHeight = 1.5, myXlab = "Log2FC per Chr X", myYlab = "Log2FC per Chr Y", demingBehind = TRUE, pointsCol = default_pointsCol, myYlim = c(-2,2), myXlim = c(-2,2))
+
+```
+
+##All 3 plots
+```{r}
+#LCLs
+myData_XY <- data.frame("x" = lcl_x_results$res_anno_exp_auto[x_and_y_lcl, "log2FoldChange"], "x_err" = lcl_x_results$res_anno_exp_auto[x_and_y_lcl, "lfcSE"], "y"=lcl_y_results$res_anno_exp_auto[x_and_y_lcl, "log2FoldChange"],"y_err" = lcl_y_results$res_anno_exp_auto[x_and_y_lcl,"lfcSE"])
+
+myData_Xonly <- data.frame("x" = lcl_x_results$res_anno_exp_auto[x_only_lcl, "log2FoldChange"], "x_err" = lcl_x_results$res_anno_exp_auto[x_only_lcl, "lfcSE"], "y"=lcl_y_results$res_anno_exp_auto[x_only_lcl, "log2FoldChange"],"y_err" = lcl_y_results$res_anno_exp_auto[x_only_lcl,"lfcSE"])
+
+myData_Yonly <- data.frame("x" = lcl_x_results$res_anno_exp_auto[y_only_lcl, "log2FoldChange"], "x_err" = lcl_x_results$res_anno_exp_auto[y_only_lcl, "lfcSE"], "y"=lcl_y_results$res_anno_exp_auto[y_only_lcl, "log2FoldChange"],"y_err" = lcl_y_results$res_anno_exp_auto[y_only_lcl,"lfcSE"])
+
+myLim <- makeSymmetric_X_Y(myData_XY$x, myData_XY$y)
+# myLim_Xonly <- makeSymmetric_X_Y(myData_Xonly$x, myData_Xonly$y)
+# myLim_Yonly <- makeSymmetric_X_Y(myData_Yonly$x, myData_Yonly$y)
+
+myData_min <- myLim[1] - 0.1
+myData_max <- myLim[2] + 0.1
+x_range <- seq(myData_min, myData_max, 0.01)
+
+#X and Y calculations
+my.deming_err_XY <- deming(formula = myData_XY$y ~ myData_XY$x, xstd = myData_XY$x_err, ystd = myData_XY$y_err) # This works...it just takes FOREVER!
+deming.slope_err_XY <- my.deming_err_XY$coefficients[2]
+deming.slope_seq_XY <- seq(my.deming_err_XY$ci[2,1], my.deming_err_XY$ci[2,2], 0.001)
+deming.int_err_XY <- my.deming_err_XY$coefficients[1]
+deming.int_seq_XY <- seq(my.deming_err_XY$ci[1,1], my.deming_err_XY$ci[1,2], 0.0001)
+deming.ribbon_table_XY <- data.frame("x" = x_range, "fit" = ((deming.slope_err_XY * x_range) + deming.int_err_XY), "y.min" = numeric(length = length(x_range)), "y.max" = numeric(length=length(x_range)))
+deming.95ci.lines_XY <- data.frame("intercept" = rep(deming.int_seq_XY, each = length(deming.slope_seq_XY)), "slope" = deming.slope_seq_XY)
+deming.ribbon_table_XY[,c("y.min","y.max")] <- t(sapply(x_range, getMaxMin, mydeming_lines = deming.95ci.lines_XY))
+myCor_pear_XY <- cor.test(myData_XY$x, myData_XY$y, method=c("pearson"))
+
+
+#X only calculations
+my.deming_err_Xonly <- deming(formula = myData_Xonly$y ~ myData_Xonly$x, xstd = myData_Xonly$x_err, ystd = myData_Xonly$y_err) # This works...it just takes FOREVER!
+deming.slope_err_Xonly <- my.deming_err_Xonly$coefficients[2]
+deming.slope_seq_Xonly <- seq(my.deming_err_Xonly$ci[2,1], my.deming_err_Xonly$ci[2,2], 0.001)
+deming.int_err_Xonly <- my.deming_err_Xonly$coefficients[1]
+deming.int_seq_Xonly <- seq(my.deming_err_Xonly$ci[1,1], my.deming_err_Xonly$ci[1,2], 0.0001)
+deming.ribbon_table_Xonly <- data.frame("x" = x_range, "fit" = ((deming.slope_err_Xonly * x_range) + deming.int_err_Xonly), "y.min" = numeric(length = length(x_range)), "y.max" = numeric(length=length(x_range)))
+deming.95ci.lines_Xonly <- data.frame("intercept" = rep(deming.int_seq_Xonly, each = length(deming.slope_seq_Xonly)), "slope" = deming.slope_seq_Xonly)
+deming.ribbon_table_Xonly[,c("y.min","y.max")] <- t(sapply(x_range, getMaxMin, mydeming_lines = deming.95ci.lines_Xonly))
+myCor_pear_Xonly <- cor.test(myData_Xonly$x, myData_Xonly$y, method=c("pearson"))
+
+#Y only calculations
+my.deming_err_Yonly <- deming(formula = myData_Yonly$y ~ myData_Yonly$x, xstd = myData_Yonly$x_err, ystd = myData_Yonly$y_err) # This works...it just takes FOREVER!
+deming.slope_err_Yonly <- my.deming_err_Yonly$coefficients[2]
+deming.slope_seq_Yonly <- seq(my.deming_err_Yonly$ci[2,1], my.deming_err_Yonly$ci[2,2], 0.001)
+deming.int_err_Yonly <- my.deming_err_Yonly$coefficients[1]
+deming.int_seq_Yonly <- seq(my.deming_err_Yonly$ci[1,1], my.deming_err_Yonly$ci[1,2], 0.0001)
+deming.ribbon_table_Yonly <- data.frame("x" = x_range, "fit" = ((deming.slope_err_Yonly * x_range) + deming.int_err_Yonly), "y.min" = numeric(length = length(x_range)), "y.max" = numeric(length=length(x_range)))
+deming.95ci.lines_Yonly <- data.frame("intercept" = rep(deming.int_seq_Yonly, each = length(deming.slope_seq_Yonly)), "slope" = deming.slope_seq_Yonly)
+deming.ribbon_table_Yonly[,c("y.min","y.max")] <- t(sapply(x_range, getMaxMin, mydeming_lines = deming.95ci.lines_Yonly))
+myCor_pear_Yonly <- cor.test(myData_Yonly$x, myData_Yonly$y, method=c("pearson"))
+  
+  
+  pdf(file="XY_Xonly_Yonly_Autosomes_LCLs.pdf", height = 2, width = 2)
+  ggplot() +
+    geom_hline(yintercept =0,col="darkgrey", size=0.25) +
+    geom_vline(xintercept = 0,  col="darkgrey", size=0.25) +
+    geom_point(data=myData_Xonly, mapping=aes(x=x, y=y),col="#D95F0290", stroke=0,) +
+    geom_point(data=myData_Yonly, mapping=aes(x=x, y=y),col="#6e02d990", stroke=0) + 
+    geom_point(data=myData_XY, mapping=aes(x=x, y=y),col="#40404080", stroke=0) + 
+    # geom_ribbon(data = deming.ribbon_table_Xonly, mapping = aes(x=x, ymin =y.min, ymax=y.max), fill="#D95F0230") +
+    geom_abline(slope = deming.slope_err_Xonly, intercept = deming.int_err_Xonly,  col="#D95F02", size=0.5) +
+    # geom_ribbon(data = deming.ribbon_table_Yonly, mapping = aes(x=x, ymin =y.min, ymax=y.max), fill="#6e02d930") +
+        geom_abline(slope = deming.slope_err_Yonly, intercept = deming.int_err_Yonly,  col="#6e02d9", size=0.5) +
+
+    # geom_ribbon(data = deming.ribbon_table_XY, mapping = aes(x=x, ymin =y.min, ymax=y.max), fill="#00000030") +
+    geom_abline(slope = deming.slope_err_XY, intercept = deming.int_err_XY,  col="black", size=0.5) +
+  # geom_abline(slope=1, intercept=0, col="#02a3d9", size=0.25, lty=2) +
+
+    scale_x_continuous(limits = c(myData_min, myData_max), expand = c(0,0)) +
+    scale_y_continuous(limits = c(myData_min, myData_max), expand = c(0,0)) +
+    annotate(
+      geom = "text",
+      x = 0.1, #top left
+      y = -1.1,
+      label = paste0('X & Y: r = ', formatC(myCor_pear_XY$estimate ,digits = 2,format = "f"), ", P = ", formatC(myCor_pear_XY$p.value, digits=2,format = "e")), hjust = 0,
+      vjust = 1,
+      size=2,
+      col="black"
+    ) +
+    annotate(
+      geom = "text",
+      x = 0.1, #top left
+      y = -1.3,
+      label = paste0('X only: r = ', formatC(myCor_pear_Xonly$estimate ,digits = 2,format = "f"), ", P = ", formatC(myCor_pear_Xonly$p.value, digits=2,format = "e")), hjust = 0,
+      vjust = 1,
+      size=2,
+      col="#ff9933"
+    ) +
+    annotate(
+      geom = "text",
+      x = 0.1, #top left
+      y = -1.5,
+      label = paste0('Y only: r = ', formatC(myCor_pear_Yonly$estimate ,digits = 2,format = "f"), ", P = ", formatC(myCor_pear_Yonly$p.value, digits=2,format = "e")), hjust = 0,
+      vjust = 1,
+      size=2,
+      col="#9966ff"
+    ) +
+    theme_classic(base_size = 10) +
+    theme(
+      axis.text = element_text(color = "black"), 
+      axis.ticks = element_line(color = "black", size = 0.25), 
+      axis.line = element_line(size = 0.25),
+      aspect.ratio=1, 
+      legend.position="none"
+    )  +  labs(
+      x= "Log2FC per Chr X",
+      y= "Log2FC per Chr Y"
+    )
+  dev.off()
+  
+  
+#Fibroblasts
+myData_XY <- data.frame("x" = fib_x_results$res_anno_exp_auto[x_and_y_fib, "log2FoldChange"], "x_err" = fib_x_results$res_anno_exp_auto[x_and_y_fib, "lfcSE"], "y"=fib_y_results$res_anno_exp_auto[x_and_y_fib, "log2FoldChange"],"y_err" = fib_y_results$res_anno_exp_auto[x_and_y_fib,"lfcSE"])
+
+myData_Xonly <- data.frame("x" = fib_x_results$res_anno_exp_auto[x_only_fib, "log2FoldChange"], "x_err" = fib_x_results$res_anno_exp_auto[x_only_fib, "lfcSE"], "y"=fib_y_results$res_anno_exp_auto[x_only_fib, "log2FoldChange"],"y_err" = fib_y_results$res_anno_exp_auto[x_only_fib,"lfcSE"])
+
+myData_Yonly <- data.frame("x" = fib_x_results$res_anno_exp_auto[y_only_fib, "log2FoldChange"], "x_err" = fib_x_results$res_anno_exp_auto[y_only_fib, "lfcSE"], "y"=fib_y_results$res_anno_exp_auto[y_only_fib, "log2FoldChange"],"y_err" = fib_y_results$res_anno_exp_auto[y_only_fib,"lfcSE"])
+
+myLim <- makeSymmetric_X_Y(myData_XY$x, myData_XY$y)
+myLim_Xonly <- makeSymmetric_X_Y(myData_Xonly$x, myData_Xonly$y)
+myLim_Yonly <- makeSymmetric_X_Y(myData_Yonly$x, myData_Yonly$y)
+
+myData_min <- myLim[1] - 0.1
+myData_max <- myLim[2] + 0.1
+x_range <- seq(myData_min, myData_max, 0.01)
+
+#X and Y calculations
+my.deming_err_XY <- deming(formula = myData_XY$y ~ myData_XY$x, xstd = myData_XY$x_err, ystd = myData_XY$y_err) # This works...it just takes FOREVER!
+deming.slope_err_XY <- my.deming_err_XY$coefficients[2]
+deming.slope_seq_XY <- seq(my.deming_err_XY$ci[2,1], my.deming_err_XY$ci[2,2], 0.001)
+deming.int_err_XY <- my.deming_err_XY$coefficients[1]
+deming.int_seq_XY <- seq(my.deming_err_XY$ci[1,1], my.deming_err_XY$ci[1,2], 0.0001)
+deming.ribbon_table_XY <- data.frame("x" = x_range, "fit" = ((deming.slope_err_XY * x_range) + deming.int_err_XY), "y.min" = numeric(length = length(x_range)), "y.max" = numeric(length=length(x_range)))
+deming.95ci.lines_XY <- data.frame("intercept" = rep(deming.int_seq_XY, each = length(deming.slope_seq_XY)), "slope" = deming.slope_seq_XY)
+deming.ribbon_table_XY[,c("y.min","y.max")] <- t(sapply(x_range, getMaxMin, mydeming_lines = deming.95ci.lines_XY))
+myCor_pear_XY <- cor.test(myData_XY$x, myData_XY$y, method=c("pearson"))
+
+
+#X only calculations
+my.deming_err_Xonly <- deming(formula = myData_Xonly$y ~ myData_Xonly$x, xstd = myData_Xonly$x_err, ystd = myData_Xonly$y_err) # This works...it just takes FOREVER!
+deming.slope_err_Xonly <- my.deming_err_Xonly$coefficients[2]
+deming.slope_seq_Xonly <- seq(my.deming_err_Xonly$ci[2,1], my.deming_err_Xonly$ci[2,2], 0.001)
+deming.int_err_Xonly <- my.deming_err_Xonly$coefficients[1]
+deming.int_seq_Xonly <- seq(my.deming_err_Xonly$ci[1,1], my.deming_err_Xonly$ci[1,2], 0.0001)
+deming.ribbon_table_Xonly <- data.frame("x" = x_range, "fit" = ((deming.slope_err_Xonly * x_range) + deming.int_err_Xonly), "y.min" = numeric(length = length(x_range)), "y.max" = numeric(length=length(x_range)))
+deming.95ci.lines_Xonly <- data.frame("intercept" = rep(deming.int_seq_Xonly, each = length(deming.slope_seq_Xonly)), "slope" = deming.slope_seq_Xonly)
+deming.ribbon_table_Xonly[,c("y.min","y.max")] <- t(sapply(x_range, getMaxMin, mydeming_lines = deming.95ci.lines_Xonly))
+myCor_pear_Xonly <- cor.test(myData_Xonly$x, myData_Xonly$y, method=c("pearson"))
+
+#Y only calculations
+my.deming_err_Yonly <- deming(formula = myData_Yonly$y ~ myData_Yonly$x, xstd = myData_Yonly$x_err, ystd = myData_Yonly$y_err) # This works...it just takes FOREVER!
+deming.slope_err_Yonly <- my.deming_err_Yonly$coefficients[2]
+deming.slope_seq_Yonly <- seq(my.deming_err_Yonly$ci[2,1], my.deming_err_Yonly$ci[2,2], 0.001)
+deming.int_err_Yonly <- my.deming_err_Yonly$coefficients[1]
+deming.int_seq_Yonly <- seq(my.deming_err_Yonly$ci[1,1], my.deming_err_Yonly$ci[1,2], 0.0001)
+deming.ribbon_table_Yonly <- data.frame("x" = x_range, "fit" = ((deming.slope_err_Yonly * x_range) + deming.int_err_Yonly), "y.min" = numeric(length = length(x_range)), "y.max" = numeric(length=length(x_range)))
+deming.95ci.lines_Yonly <- data.frame("intercept" = rep(deming.int_seq_Yonly, each = length(deming.slope_seq_Yonly)), "slope" = deming.slope_seq_Yonly)
+deming.ribbon_table_Yonly[,c("y.min","y.max")] <- t(sapply(x_range, getMaxMin, mydeming_lines = deming.95ci.lines_Yonly))
+myCor_pear_Yonly <- cor.test(myData_Yonly$x, myData_Yonly$y, method=c("pearson"))
+  
+  
+  pdf(file="XY_Xonly_Yonly_Autosomes_fibs.pdf", height = 2, width = 2)
+  ggplot() +
+    geom_hline(yintercept =0,col="darkgrey", size=0.25) +
+    geom_vline(xintercept = 0,  col="darkgrey", size=0.25) +
+    geom_point(data=myData_Xonly, mapping=aes(x=x, y=y),col="#D95F0290", stroke=0,) +
+    geom_point(data=myData_Yonly, mapping=aes(x=x, y=y),col="#6e02d990", stroke=0) + 
+    geom_point(data=myData_XY, mapping=aes(x=x, y=y),col="#40404080", stroke=0) + 
+    # geom_ribbon(data = deming.ribbon_table_Xonly, mapping = aes(x=x, ymin =y.min, ymax=y.max), fill="#D95F0230") +
+    geom_abline(slope = deming.slope_err_Xonly, intercept = deming.int_err_Xonly,  col="#D95F02", size=0.5) +
+    # geom_ribbon(data = deming.ribbon_table_Yonly, mapping = aes(x=x, ymin =y.min, ymax=y.max), fill="#6e02d930") +
+        geom_abline(slope = deming.slope_err_Yonly, intercept = deming.int_err_Yonly,  col="#6e02d9", size=0.5) +
+
+    # geom_ribbon(data = deming.ribbon_table_XY, mapping = aes(x=x, ymin =y.min, ymax=y.max), fill="#00000030") +
+    geom_abline(slope = deming.slope_err_XY, intercept = deming.int_err_XY,  col="black", size=0.5) +
+  # geom_abline(slope=1, intercept=0, col="#02a3d9", size=0.25, lty=2) +
+
+    scale_x_continuous(limits = c(myData_min, myData_max), expand = c(0,0)) +
+    scale_y_continuous(limits = c(myData_min, myData_max), expand = c(0,0)) +
+    annotate(
+      geom = "text",
+      x = 0.1, #top left
+      y = -0.7,
+      label = paste0('X & Y: r = ', formatC(myCor_pear_XY$estimate ,digits = 2,format = "f"), ", P = ", formatC(myCor_pear_XY$p.value, digits=2,format = "e")), hjust = 0,
+      vjust = 1,
+      size=2,
+      col="black"
+    ) +
+    annotate(
+      geom = "text",
+      x = 0.1, #top left
+      y = -0.9,
+      label = paste0('X only: r = ', formatC(myCor_pear_Xonly$estimate ,digits = 2,format = "f"), ", P = ", formatC(myCor_pear_Xonly$p.value, digits=2,format = "e")), hjust = 0,
+      vjust = 1,
+      size=2,
+      col="#ff9933"
+    ) +
+    annotate(
+      geom = "text",
+      x = 0.1, #top left
+      y = -1.1,
+      label = paste0('Y only: r = ', formatC(myCor_pear_Yonly$estimate ,digits = 2,format = "f"), ", P = ", formatC(myCor_pear_Yonly$p.value, digits=2,format = "e")), hjust = 0,
+      vjust = 1,
+      size=2,
+      col="#9966ff"
+    ) +
+    theme_classic(base_size = 10) +
+    theme(
+      axis.text = element_text(color = "black"), 
+      axis.ticks = element_line(color = "black", size = 0.25), 
+      axis.line = element_line(size = 0.25),
+      aspect.ratio=1, 
+      legend.position="none"
+    )  +  labs(
+      x= "Log2FC per Chr X",
+      y= "Log2FC per Chr Y"
+    )
+  dev.off()
+```
+
+#Xa expressed genes X vs Y response
+```{r}
+#bring AR annotations
+AR_values <- read.delim(file=paste0(myPath,"Annotations/all_AR_annotation_20230530.txt"))
+rownames(AR_values) <- AR_values$gene_name.84
+
+AR_values_edit <- AR_values[,c("gene_name.84", "Final_XCI_Call")]
+
+lcl_x_res_chrX <- na.omit(lcl_x_results$res_anno_exp[lcl_x_results$res_anno_exp$chr == "chrX",])
+colnames(lcl_x_res_chrX)[2:7] <- paste0(colnames(lcl_x_res_chrX)[2:7],"_X")
+lcl_y_res_chrX <- na.omit(lcl_y_results$res_anno_exp[lcl_y_results$res_anno_exp$chr == "chrX",])
+colnames(lcl_y_res_chrX)[2:7] <- paste0(colnames(lcl_y_res_chrX)[2:7],"_Y")
+
+lcl_x_y_res_merge <- merge(x=lcl_x_res_chrX[,c(1:7)], y=lcl_y_res_chrX, by="Gene", all=TRUE)
+
+lcl_x_y_res_merge <- merge(x=lcl_x_y_res_merge, y=AR_values_edit, by.x="Gene", by.y="gene_name.84", all.x=TRUE)
+write.table(x=lcl_x_y_res_merge, file="lcl_x_y_res_merge_AR.txt", quote=FALSE, sep="\t", col.names = TRUE, row.names = FALSE)
+
+fib_x_res_chrX <- na.omit(fib_x_results$res_anno_exp[fib_x_results$res_anno_exp$chr == "chrX",])
+colnames(fib_x_res_chrX)[2:7] <- paste0(colnames(fib_x_res_chrX)[2:7],"_X")
+fib_y_res_chrX <- na.omit(fib_y_results$res_anno_exp[fib_y_results$res_anno_exp$chr == "chrX",])
+colnames(fib_y_res_chrX)[2:7] <- paste0(colnames(fib_y_res_chrX)[2:7],"_Y")
+
+fib_x_y_res_merge <- merge(x=fib_x_res_chrX[,c(1:7)], y=fib_y_res_chrX, by="Gene", all=TRUE)
+
+fib_x_y_res_merge <- merge(x=fib_x_y_res_merge, y=AR_values_edit, by.x="Gene", by.y="gene_name.84", all.x=TRUE)
+write.table(x=fib_x_y_res_merge, file="fib_x_y_res_merge_AR.txt", quote=FALSE, sep="\t", col.names = TRUE, row.names = FALSE)
+
+AR_values_subject <- AR_values[AR_values$Final_XCI_Call %in% c("Subject"),]
+
+#Bring in the Xa expressed regression results sig genes
+
+lcl_x_results_ChrXa <- na.omit(lcl_x_results$res_anno_exp[lcl_x_results$res_anno_exp$Gene %in% AR_values_subject$gene_name.84,])
+lcl_x_results_ChrXa_sig <- lcl_x_results_ChrXa[lcl_x_results_ChrXa$padj < 0.05,]
+
+lcl_y_results_ChrXa <- na.omit(lcl_y_results$res_anno_exp[lcl_y_results$res_anno_exp$Gene %in% AR_values_subject$gene_name.84,])
+lcl_y_results_ChrXa_sig <- lcl_y_results_ChrXa[lcl_y_results_ChrXa$padj < 0.05,]
+
+lcl_Xa_XandY_Resp <- intersect(lcl_x_results_ChrXa_sig$Gene, lcl_y_results_ChrXa_sig$Gene)
+lcl_Xa_xonly <- setdiff(lcl_x_results_ChrXa_sig$Gene, lcl_y_results_ChrXa_sig$Gene)
+lcl_Xa_yonly <- setdiff(lcl_y_results_ChrXa_sig$Gene, lcl_x_results_ChrXa_sig$Gene)
+
+union_lcl_x_y_Xa <- union(lcl_x_results_ChrXa_sig$Gene, lcl_y_results_ChrXa_sig$Gene)
+
+fib_x_results_ChrXa <- na.omit(fib_x_results$res_anno_exp[fib_x_results$res_anno_exp$Gene %in% AR_values_subject$gene_name.84,])
+fib_x_results_ChrXa_sig <- fib_x_results_ChrXa[fib_x_results_ChrXa$padj < 0.05,]
+
+fib_y_results_ChrXa <- na.omit(fib_y_results$res_anno_exp[fib_y_results$res_anno_exp$Gene %in% AR_values_subject$gene_name.84,])
+fib_y_results_ChrXa_sig <- fib_y_results_ChrXa[fib_y_results_ChrXa$padj < 0.05,]
+fib_Xa_XandY_Resp <- intersect(fib_x_results_ChrXa_sig$Gene, fib_y_results_ChrXa_sig$Gene)
+fib_Xa_xonly <- setdiff(fib_x_results_ChrXa_sig$Gene, fib_y_results_ChrXa_sig$Gene)
+fib_Xa_yonly <- setdiff(fib_y_results_ChrXa_sig$Gene, fib_x_results_ChrXa_sig$Gene)
+
+union_fib_x_y_Xa <- union(fib_x_results_ChrXa_sig$Gene, fib_y_results_ChrXa_sig$Gene)
+
+union_lcl_fib_Xa <- union(union_lcl_x_y_Xa, union_fib_x_y_Xa)
+
+
+#NPX Xa and Xi genes
+AR_values_escape <- AR_values[AR_values$Final_XCI_Call %in% c("Escape") & ! AR_values$gene_name.84 %in% PAR1_genes,]
+lcl_x_results_ChrXi <- na.omit(lcl_x_results$res_anno_exp[lcl_x_results$res_anno_exp$Gene %in% AR_values_escape$gene_name.84,])
+lcl_x_results_ChrXi_sig <- lcl_x_results_ChrXi[lcl_x_results_ChrXi$padj < 0.05,]
+
+lcl_y_results_ChrXi <- na.omit(lcl_y_results$res_anno_exp[lcl_y_results$res_anno_exp$Gene %in% AR_values_escape$gene_name.84,])
+lcl_y_results_ChrXi_sig <- lcl_y_results_ChrXi[lcl_y_results_ChrXi$padj < 0.05,]
+lcl_Xi_XindY_Resp <- intersect(lcl_x_results_ChrXi_sig$Gene, lcl_y_results_ChrXi_sig$Gene)
+
+union_lcl_x_y_Xi <- union(lcl_x_results_ChrXi_sig$Gene, lcl_y_results_ChrXi_sig$Gene)
+
+fib_x_results_ChrXi <- na.omit(fib_x_results$res_anno_exp[fib_x_results$res_anno_exp$Gene %in% AR_values_escape$gene_name.84,])
+fib_x_results_ChrXi_sig <- fib_x_results_ChrXi[fib_x_results_ChrXi$padj < 0.05,]
+
+fib_y_results_ChrXi <- na.omit(fib_y_results$res_anno_exp[fib_y_results$res_anno_exp$Gene %in% AR_values_escape$gene_name.84,])
+fib_y_results_ChrXi_sig <- fib_y_results_ChrXi[fib_y_results_ChrXi$padj < 0.05,]
+fib_Xi_XindY_Resp <- intersect(fib_x_results_ChrXi_sig$Gene, fib_y_results_ChrXi_sig$Gene)
+
+union_fib_x_y_Xi <- union(fib_x_results_ChrXi_sig$Gene, fib_y_results_ChrXi_sig$Gene)
+
+union_lcl_fib_Xi <- union(union_lcl_x_y_Xi, union_fib_x_y_Xi)
+
+#PAR Xa and Xi genes
+AR_values_escape_PAR1 <- AR_values[AR_values$Final_XCI_Call %in% c("Escape") & AR_values$gene_name.84 %in% PAR1_genes,]
+
+lcl_x_results_PAR1 <- na.omit(lcl_x_results$res_anno_exp[lcl_x_results$res_anno_exp$Gene %in% AR_values_escape_PAR1$gene_name.84,])
+lcl_x_results_PAR1_sig <- lcl_x_results_PAR1[lcl_x_results_PAR1$padj < 0.05,]
+
+lcl_y_results_PAR1 <- na.omit(lcl_y_results$res_anno_exp[lcl_y_results$res_anno_exp$Gene %in% AR_values_escape_PAR1$gene_name.84,])
+lcl_y_results_PAR1_sig <- lcl_y_results_PAR1[lcl_y_results_PAR1$padj < 0.05,]
+lcl_PAR1_XindY_Resp <- intersect(lcl_x_results_PAR1_sig$Gene, lcl_y_results_PAR1_sig$Gene)
+
+union_lcl_x_y_PAR1 <- union(lcl_x_results_PAR1_sig$Gene, lcl_y_results_PAR1_sig$Gene)
+
+fib_x_results_PAR1 <- na.omit(fib_x_results$res_anno_exp[fib_x_results$res_anno_exp$Gene %in% AR_values_escape_PAR1$gene_name.84,])
+fib_x_results_PAR1_sig <- fib_x_results_PAR1[fib_x_results_PAR1$padj < 0.05,]
+
+fib_y_results_PAR1 <- na.omit(fib_y_results$res_anno_exp[fib_y_results$res_anno_exp$Gene %in% AR_values_escape_PAR1$gene_name.84,])
+fib_y_results_PAR1_sig <- fib_y_results_PAR1[fib_y_results_PAR1$padj < 0.05,]
+fib_PAR1_XindY_Resp <- intersect(fib_x_results_PAR1_sig$Gene, fib_y_results_PAR1_sig$Gene)
+
+union_fib_x_y_PAR1 <- union(fib_x_results_PAR1_sig$Gene, fib_y_results_PAR1_sig$Gene)
+
+union_lcl_fib_PAR1 <- union(union_lcl_x_y_PAR1, union_fib_x_y_PAR1)
+
+#No call
+AR_values_no_call <- AR_values[AR_values$Final_XCI_Call %in% c("No call"),]
+lcl_x_results_Chrnocall <- na.omit(lcl_x_results$res_anno_exp[lcl_x_results$res_anno_exp$Gene %in% AR_values_no_call$gene_name.84,])
+lcl_x_results_Chrnocall_sig <- lcl_x_results_Chrnocall[lcl_x_results_Chrnocall$padj < 0.05,]
+
+lcl_y_results_Chrnocall <- na.omit(lcl_y_results$res_anno_exp[lcl_y_results$res_anno_exp$Gene %in% AR_values_no_call$gene_name.84,])
+lcl_y_results_Chrnocall_sig <- lcl_y_results_Chrnocall[lcl_y_results_Chrnocall$padj < 0.05,]
+lcl_nocall_nocallndY_Resp <- intersect(lcl_x_results_Chrnocall_sig$Gene, lcl_y_results_Chrnocall_sig$Gene)
+
+union_lcl_x_y_nocall <- union(lcl_x_results_Chrnocall_sig$Gene, lcl_y_results_Chrnocall_sig$Gene)
+
+fib_x_results_Chrnocall <- na.omit(fib_x_results$res_anno_exp[fib_x_results$res_anno_exp$Gene %in% AR_values_no_call$gene_name.84,])
+fib_x_results_Chrnocall_sig <- fib_x_results_Chrnocall[fib_x_results_Chrnocall$padj < 0.05,]
+
+fib_y_results_Chrnocall <- na.omit(fib_y_results$res_anno_exp[fib_y_results$res_anno_exp$Gene %in% AR_values_no_call$gene_name.84,])
+fib_y_results_Chrnocall_sig <- fib_y_results_Chrnocall[fib_y_results_Chrnocall$padj < 0.05,]
+fib_nocall_nocallndY_Resp <- intersect(fib_x_results_Chrnocall_sig$Gene, fib_y_results_Chrnocall_sig$Gene)
+
+union_fib_x_y_nocall <- union(fib_x_results_Chrnocall_sig$Gene, fib_y_results_Chrnocall_sig$Gene)
+
+union_lcl_fib_nocall <- union(union_lcl_x_y_nocall, union_fib_x_y_nocall)
+
+
+
+#Y genes
+lcl_x_results_ChrY <- na.omit(lcl_x_results$res_anno_exp[lcl_x_results$res_anno_exp$chr %in% c("chrY"),])
+lcl_x_results_ChrY_sig <- lcl_x_results_ChrY[lcl_x_results_ChrY$padj < 0.05,]
+
+lcl_y_results_ChrY <- na.omit(lcl_y_results$res_anno_exp[lcl_y_results$res_anno_exp$chr  %in% c("chrY"),])
+lcl_y_results_ChrY_sig <- lcl_y_results_ChrY[lcl_y_results_ChrY$padj < 0.05,]
+lcl_Y_YndY_Resp <- intersect(lcl_x_results_ChrY_sig$Gene, lcl_y_results_ChrY_sig$Gene)
+
+union_lcl_x_y_Y <- union(lcl_x_results_ChrY_sig$Gene, lcl_y_results_ChrY_sig$Gene)
+
+fib_x_results_ChrY <- na.omit(fib_x_results$res_anno_exp[fib_x_results$res_anno_exp$chr  %in% c("chrY"),])
+fib_x_results_ChrY_sig <- fib_x_results_ChrY[fib_x_results_ChrY$padj < 0.05,]
+
+fib_y_results_ChrY <- na.omit(fib_y_results$res_anno_exp[fib_y_results$res_anno_exp$chr  %in% c("chrY"),])
+fib_y_results_ChrY_sig <- fib_y_results_ChrY[fib_y_results_ChrY$padj < 0.05,]
+fib_Y_YndY_Resp <- intersect(fib_x_results_ChrY_sig$Gene, fib_y_results_ChrY_sig$Gene)
+
+union_fib_x_y_Y <- union(fib_x_results_ChrY_sig$Gene, fib_y_results_ChrY_sig$Gene)
+
+union_lcl_fib_Y_sig <- union(union_lcl_x_y_Y, union_fib_x_y_Y)
+
+union_lcl_fib_Y <- union(lcl_x_results_ChrY$Gene, fib_x_results_ChrY$Gene)
+
+
+#LCLs 
+#X- and Y-responsive gene overlap
+twoGroupVenn_geneNames(setA = lcl_x_results_ChrXa_sig$Gene, setAname = "X_responsive", setB = lcl_y_results_ChrXa_sig$Gene, setBname = "Y_responsive", expGenes = lcl_x_results_ChrXa$Gene, filename = "X_Y_Intersect_lcl_Xaexpressed.pdf")
+
+myData <- data.frame("x" = lcl_x_results_ChrXa[lcl_Xa_XandY_Resp,"log2FoldChange"], "x_err" = lcl_x_results_ChrXa[lcl_Xa_XandY_Resp,"lfcSE"], "y"=lcl_y_results_ChrXa[lcl_Xa_XandY_Resp, "log2FoldChange"], "y_err" = lcl_y_results_ChrXa[lcl_Xa_XandY_Resp,"lfcSE"], row.names = lcl_Xa_XandY_Resp)
+
+paper2_corrPlot_deming_err(myData = myData, myTitle = "lcl_X_and_Y_Xa_corrPlot.pdf", myWidth = 1.5, myHeight = 1.5, myXlab = "Log2FC per Chr X", myYlab = "Log2FC per Chr Y", demingBehind = TRUE, pointsCol = default_pointsCol)
+
+
+####Fibs####
+#X- and Y-responsive gene overlap
+twoGroupVenn_geneNames(setA = fib_x_results_ChrXa_sig$Gene, setAname = "X_responsive", setB = fib_y_results_ChrXa_sig$Gene, setBname = "Y_responsive", expGenes = fib_x_results_ChrXa$Gene, filename = "X_Y_Intersect_fib_Xaexpressed.pdf")
+
+myData <- data.frame("x" = fib_x_results_ChrXa[fib_Xa_XandY_Resp,"log2FoldChange"], "x_err" = fib_x_results_ChrXa[fib_Xa_XandY_Resp,"lfcSE"], "y"=fib_y_results_ChrXa[fib_Xa_XandY_Resp, "log2FoldChange"], "y_err" = fib_y_results_ChrXa[fib_Xa_XandY_Resp,"lfcSE"], row.names = fib_Xa_XandY_Resp)
+
+paper2_corrPlot_deming_err(myData = myData, myTitle = "fib_X_and_Y_Xa_corrPlot.pdf", myWidth = 1.5, myHeight = 1.5, myXlab = "Log2FC per Chr X", myYlab = "Log2FC per Chr Y", demingBehind = TRUE, pointsCol = default_pointsCol)
+
+
+#### All 3 plots, LCLs ####
+myData_XY <- data.frame("x" = lcl_x_results_ChrXa[lcl_Xa_XandY_Resp,"log2FoldChange"], 
+                        "x_err" = lcl_x_results_ChrXa[lcl_Xa_XandY_Resp,"lfcSE"],
+                        "y"=lcl_y_results_ChrXa[lcl_Xa_XandY_Resp, "log2FoldChange"], 
+                        "y_err" = lcl_y_results_ChrXa[lcl_Xa_XandY_Resp,"lfcSE"], 
+                        row.names = lcl_Xa_XandY_Resp)
+
+myData_Xonly <- data.frame("x" = lcl_x_results_ChrXa[lcl_Xa_xonly,"log2FoldChange"], 
+                           "x_err" = lcl_x_results_ChrXa[lcl_Xa_xonly,"lfcSE"],
+                           "y"=lcl_y_results_ChrXa[lcl_Xa_xonly, "log2FoldChange"], 
+                           "y_err" = lcl_y_results_ChrXa[lcl_Xa_xonly,"lfcSE"], 
+                           row.names = lcl_Xa_xonly)
+myData_Yonly <- data.frame("x" = lcl_x_results_ChrXa[lcl_Xa_yonly,"log2FoldChange"], 
+                           "x_err" = lcl_x_results_ChrXa[lcl_Xa_yonly,"lfcSE"],
+                           "y"=lcl_y_results_ChrXa[lcl_Xa_yonly, "log2FoldChange"], 
+                           "y_err" = lcl_y_results_ChrXa[lcl_Xa_yonly,"lfcSE"], 
+                           row.names = lcl_Xa_yonly)
+
+myData_min <- -1.1 - 0.1
+myData_max <- 1.1 + 0.1
+x_range <- seq(myData_min, myData_max, 0.01)
+
+#X and Y calculations
+my.deming_err_XY <- deming(formula = myData_XY$y ~ myData_XY$x, xstd = myData_XY$x_err, ystd = myData_XY$y_err) # This works...it just takes FOREVER!
+deming.slope_err_XY <- my.deming_err_XY$coefficients[2]
+deming.slope_seq_XY <- seq(my.deming_err_XY$ci[2,1], my.deming_err_XY$ci[2,2], 0.001)
+deming.int_err_XY <- my.deming_err_XY$coefficients[1]
+deming.int_seq_XY <- seq(my.deming_err_XY$ci[1,1], my.deming_err_XY$ci[1,2], 0.0001)
+deming.ribbon_table_XY <- data.frame("x" = x_range, "fit" = ((deming.slope_err_XY * x_range) + deming.int_err_XY), "y.min" = numeric(length = length(x_range)), "y.max" = numeric(length=length(x_range)))
+deming.95ci.lines_XY <- data.frame("intercept" = rep(deming.int_seq_XY, each = length(deming.slope_seq_XY)), "slope" = deming.slope_seq_XY)
+deming.ribbon_table_XY[,c("y.min","y.max")] <- t(sapply(x_range, getMaxMin, mydeming_lines = deming.95ci.lines_XY))
+myCor_pear_XY <- cor.test(myData_XY$x, myData_XY$y, method=c("pearson"))
+
+
+#X only calculations
+my.deming_err_Xonly <- deming(formula = myData_Xonly$y ~ myData_Xonly$x, xstd = myData_Xonly$x_err, ystd = myData_Xonly$y_err) # This works...it just takes FOREVER!
+deming.slope_err_Xonly <- my.deming_err_Xonly$coefficients[2]
+deming.slope_seq_Xonly <- seq(my.deming_err_Xonly$ci[2,1], my.deming_err_Xonly$ci[2,2], 0.001)
+deming.int_err_Xonly <- my.deming_err_Xonly$coefficients[1]
+deming.int_seq_Xonly <- seq(my.deming_err_Xonly$ci[1,1], my.deming_err_Xonly$ci[1,2], 0.0001)
+deming.ribbon_table_Xonly <- data.frame("x" = x_range, "fit" = ((deming.slope_err_Xonly * x_range) + deming.int_err_Xonly), "y.min" = numeric(length = length(x_range)), "y.max" = numeric(length=length(x_range)))
+deming.95ci.lines_Xonly <- data.frame("intercept" = rep(deming.int_seq_Xonly, each = length(deming.slope_seq_Xonly)), "slope" = deming.slope_seq_Xonly)
+deming.ribbon_table_Xonly[,c("y.min","y.max")] <- t(sapply(x_range, getMaxMin, mydeming_lines = deming.95ci.lines_Xonly))
+myCor_pear_Xonly <- cor.test(myData_Xonly$x, myData_Xonly$y, method=c("pearson"))
+
+#Y only calculations
+my.deming_err_Yonly <- deming(formula = myData_Yonly$y ~ myData_Yonly$x, xstd = myData_Yonly$x_err, ystd = myData_Yonly$y_err) # This works...it just takes FOREVER!
+deming.slope_err_Yonly <- my.deming_err_Yonly$coefficients[2]
+deming.slope_seq_Yonly <- seq(my.deming_err_Yonly$ci[2,1], my.deming_err_Yonly$ci[2,2], 0.001)
+deming.int_err_Yonly <- my.deming_err_Yonly$coefficients[1]
+deming.int_seq_Yonly <- seq(my.deming_err_Yonly$ci[1,1], my.deming_err_Yonly$ci[1,2], 0.0001)
+deming.ribbon_table_Yonly <- data.frame("x" = x_range, "fit" = ((deming.slope_err_Yonly * x_range) + deming.int_err_Yonly), "y.min" = numeric(length = length(x_range)), "y.max" = numeric(length=length(x_range)))
+deming.95ci.lines_Yonly <- data.frame("intercept" = rep(deming.int_seq_Yonly, each = length(deming.slope_seq_Yonly)), "slope" = deming.slope_seq_Yonly)
+deming.ribbon_table_Yonly[,c("y.min","y.max")] <- t(sapply(x_range, getMaxMin, mydeming_lines = deming.95ci.lines_Yonly))
+myCor_pear_Yonly <- cor.test(myData_Yonly$x, myData_Yonly$y, method=c("pearson"))
+  
+  
+  pdf(file="XY_Xonly_Yonly_LCLs.pdf", height = 2, width = 2)
+  ggplot() +
+    geom_hline(yintercept =0,col="darkgrey", size=0.25) +
+    geom_vline(xintercept = 0,  col="darkgrey", size=0.25) +
+    geom_point(data=myData_Xonly, mapping=aes(x=x, y=y),col="#D95F0290", stroke=0,) +
+    geom_point(data=myData_Yonly, mapping=aes(x=x, y=y),col="#6e02d990", stroke=0) + 
+    geom_point(data=myData_XY, mapping=aes(x=x, y=y),col="#40404080", stroke=0) + 
+    # geom_ribbon(data = deming.ribbon_table_Xonly, mapping = aes(x=x, ymin =y.min, ymax=y.max), fill="#D95F0230") +
+    geom_abline(slope = deming.slope_err_Xonly, intercept = deming.int_err_Xonly,  col="#D95F02", size=0.5) +
+    # geom_ribbon(data = deming.ribbon_table_Yonly, mapping = aes(x=x, ymin =y.min, ymax=y.max), fill="#6e02d930") +
+        geom_abline(slope = deming.slope_err_Yonly, intercept = deming.int_err_Yonly,  col="#6e02d9", size=0.5) +
+
+    # geom_ribbon(data = deming.ribbon_table_XY, mapping = aes(x=x, ymin =y.min, ymax=y.max), fill="#00000030") +
+    geom_abline(slope = deming.slope_err_XY, intercept = deming.int_err_XY,  col="black", size=0.5) +
+  # geom_abline(slope=1, intercept=0, col="#02a3d9", size=0.25, lty=2) +
+
+    scale_x_continuous(limits = c(myData_min, myData_max), expand = c(0,0)) +
+    scale_y_continuous(limits = c(myData_min, myData_max), expand = c(0,0)) +
+    annotate(
+      geom = "text",
+      x = 0.1, #top left
+      y = -0.225,
+      label = paste0('X & Y: r = ', formatC(myCor_pear_XY$estimate ,digits = 2,format = "f"), ", P = ", formatC(myCor_pear_XY$p.value, digits=2,format = "e")), hjust = 0,
+      vjust = 1,
+      size=2,
+      col="black"
+    ) +
+    annotate(
+      geom = "text",
+      x = 0.1, #top left
+      y = -0.275,
+      label = paste0('X only: r = ', formatC(myCor_pear_Xonly$estimate ,digits = 2,format = "f"), ", P = ", formatC(myCor_pear_Xonly$p.value, digits=2,format = "e")), hjust = 0,
+      vjust = 1,
+      size=2,
+      col="#ff9933"
+    ) +
+    annotate(
+      geom = "text",
+      x = 0.1, #top left
+      y = -0.325,
+      label = paste0('Y only: r = ', formatC(myCor_pear_Yonly$estimate ,digits = 2,format = "f"), ", P = ", formatC(myCor_pear_Yonly$p.value, digits=2,format = "e")), hjust = 0,
+      vjust = 1,
+      size=2,
+      col="#9966ff"
+    ) +
+    theme_classic(base_size = 10) +
+    theme(
+      axis.text = element_text(color = "black"), 
+      axis.ticks = element_line(color = "black", size = 0.25), 
+      axis.line = element_line(size = 0.25),
+      aspect.ratio=1, 
+      legend.position="none"
+    )  +  labs(
+      x= "Log2FC per Chr X",
+      y= "Log2FC per Chr Y"
+    )
+  dev.off()
+ 
+  
+#### All 3 plots, fibs ####
+myData_XY <- data.frame("x" = fib_x_results_ChrXa[fib_Xa_XandY_Resp,"log2FoldChange"], 
+                        "x_err" = fib_x_results_ChrXa[fib_Xa_XandY_Resp,"lfcSE"],
+                        "y"=fib_y_results_ChrXa[fib_Xa_XandY_Resp, "log2FoldChange"], 
+                        "y_err" = fib_y_results_ChrXa[fib_Xa_XandY_Resp,"lfcSE"], 
+                        row.names = fib_Xa_XandY_Resp)
+
+myData_Xonly <- data.frame("x" = fib_x_results_ChrXa[fib_Xa_xonly,"log2FoldChange"], 
+                           "x_err" = fib_x_results_ChrXa[fib_Xa_xonly,"lfcSE"],
+                           "y"=fib_y_results_ChrXa[fib_Xa_xonly, "log2FoldChange"], 
+                           "y_err" = fib_y_results_ChrXa[fib_Xa_xonly,"lfcSE"], 
+                           row.names = fib_Xa_xonly)
+myData_Yonly <- data.frame("x" = fib_x_results_ChrXa[fib_Xa_yonly,"log2FoldChange"], 
+                           "x_err" = fib_x_results_ChrXa[fib_Xa_yonly,"lfcSE"],
+                           "y"=fib_y_results_ChrXa[fib_Xa_yonly, "log2FoldChange"], 
+                           "y_err" = fib_y_results_ChrXa[fib_Xa_yonly,"lfcSE"], 
+                           row.names = fib_Xa_yonly)
+
+myData_min <- -1.2
+myData_max <- 1.2
+x_range <- seq(myData_min, myData_max, 0.01)
+
+#X and Y calculations
+my.deming_err_XY <- deming(formula = myData_XY$y ~ myData_XY$x, xstd = myData_XY$x_err, ystd = myData_XY$y_err) # This works...it just takes FOREVER!
+deming.slope_err_XY <- my.deming_err_XY$coefficients[2]
+deming.slope_seq_XY <- seq(my.deming_err_XY$ci[2,1], my.deming_err_XY$ci[2,2], 0.001)
+deming.int_err_XY <- my.deming_err_XY$coefficients[1]
+deming.int_seq_XY <- seq(my.deming_err_XY$ci[1,1], my.deming_err_XY$ci[1,2], 0.0001)
+deming.ribbon_table_XY <- data.frame("x" = x_range, "fit" = ((deming.slope_err_XY * x_range) + deming.int_err_XY), "y.min" = numeric(length = length(x_range)), "y.max" = numeric(length=length(x_range)))
+deming.95ci.lines_XY <- data.frame("intercept" = rep(deming.int_seq_XY, each = length(deming.slope_seq_XY)), "slope" = deming.slope_seq_XY)
+deming.ribbon_table_XY[,c("y.min","y.max")] <- t(sapply(x_range, getMaxMin, mydeming_lines = deming.95ci.lines_XY))
+myCor_pear_XY <- cor.test(myData_XY$x, myData_XY$y, method=c("pearson"))
+
+
+#X only calculations
+my.deming_err_Xonly <- deming(formula = myData_Xonly$y ~ myData_Xonly$x, xstd = myData_Xonly$x_err, ystd = myData_Xonly$y_err) # This works...it just takes FOREVER!
+deming.slope_err_Xonly <- my.deming_err_Xonly$coefficients[2]
+deming.slope_seq_Xonly <- seq(my.deming_err_Xonly$ci[2,1], my.deming_err_Xonly$ci[2,2], 0.001)
+deming.int_err_Xonly <- my.deming_err_Xonly$coefficients[1]
+deming.int_seq_Xonly <- seq(my.deming_err_Xonly$ci[1,1], my.deming_err_Xonly$ci[1,2], 0.0001)
+deming.ribbon_table_Xonly <- data.frame("x" = x_range, "fit" = ((deming.slope_err_Xonly * x_range) + deming.int_err_Xonly), "y.min" = numeric(length = length(x_range)), "y.max" = numeric(length=length(x_range)))
+deming.95ci.lines_Xonly <- data.frame("intercept" = rep(deming.int_seq_Xonly, each = length(deming.slope_seq_Xonly)), "slope" = deming.slope_seq_Xonly)
+deming.ribbon_table_Xonly[,c("y.min","y.max")] <- t(sapply(x_range, getMaxMin, mydeming_lines = deming.95ci.lines_Xonly))
+myCor_pear_Xonly <- cor.test(myData_Xonly$x, myData_Xonly$y, method=c("pearson"))
+
+#Y only calculations
+my.deming_err_Yonly <- deming(formula = myData_Yonly$y ~ myData_Yonly$x, xstd = myData_Yonly$x_err, ystd = myData_Yonly$y_err) # This works...it just takes FOREVER!
+deming.slope_err_Yonly <- my.deming_err_Yonly$coefficients[2]
+deming.slope_seq_Yonly <- seq(my.deming_err_Yonly$ci[2,1], my.deming_err_Yonly$ci[2,2], 0.001)
+deming.int_err_Yonly <- my.deming_err_Yonly$coefficients[1]
+deming.int_seq_Yonly <- seq(my.deming_err_Yonly$ci[1,1], my.deming_err_Yonly$ci[1,2], 0.0001)
+deming.ribbon_table_Yonly <- data.frame("x" = x_range, "fit" = ((deming.slope_err_Yonly * x_range) + deming.int_err_Yonly), "y.min" = numeric(length = length(x_range)), "y.max" = numeric(length=length(x_range)))
+deming.95ci.lines_Yonly <- data.frame("intercept" = rep(deming.int_seq_Yonly, each = length(deming.slope_seq_Yonly)), "slope" = deming.slope_seq_Yonly)
+deming.ribbon_table_Yonly[,c("y.min","y.max")] <- t(sapply(x_range, getMaxMin, mydeming_lines = deming.95ci.lines_Yonly))
+myCor_pear_Yonly <- cor.test(myData_Yonly$x, myData_Yonly$y, method=c("pearson"))
+  
+  
+  pdf(file="XY_Xonly_Yonly_fibs.pdf", height = 2, width = 2)
+  ggplot() +
+    geom_hline(yintercept =0,col="darkgrey", size=0.25) +
+    geom_vline(xintercept = 0,  col="darkgrey", size=0.25) +
+    geom_point(data=myData_Xonly, mapping=aes(x=x, y=y),col="#D95F0290", stroke=0,) +
+    geom_point(data=myData_Yonly, mapping=aes(x=x, y=y),col="#6e02d990", stroke=0) + 
+    geom_point(data=myData_XY, mapping=aes(x=x, y=y),col="#40404080", stroke=0) + 
+    # geom_ribbon(data = deming.ribbon_table_Xonly, mapping = aes(x=x, ymin =y.min, ymax=y.max), fill="#D95F0230") +
+    geom_abline(slope = deming.slope_err_Xonly, intercept = deming.int_err_Xonly,  col="#D95F02", size=0.5) +
+    # geom_ribbon(data = deming.ribbon_table_Yonly, mapping = aes(x=x, ymin =y.min, ymax=y.max), fill="#6e02d930") +
+        geom_abline(slope = deming.slope_err_Yonly, intercept = deming.int_err_Yonly,  col="#6e02d9", size=0.5) +
+
+    # geom_ribbon(data = deming.ribbon_table_XY, mapping = aes(x=x, ymin =y.min, ymax=y.max), fill="#00000030") +
+    geom_abline(slope = deming.slope_err_XY, intercept = deming.int_err_XY,  col="black", size=0.5) +
+  # geom_abline(slope=1, intercept=0, col="#02a3d9", size=0.25, lty=2) +
+
+    scale_x_continuous(limits = c(myData_min, myData_max), expand = c(0,0)) +
+    scale_y_continuous(limits = c(myData_min, myData_max), expand = c(0,0)) +
+    annotate(
+      geom = "text",
+      x = 0.1, #top left
+      y = -0.225,
+      label = paste0('X & Y: r = ', formatC(myCor_pear_XY$estimate ,digits = 2,format = "f"), ", P = ", formatC(myCor_pear_XY$p.value, digits=2,format = "e")), hjust = 0,
+      vjust = 1,
+      size=2,
+      col="black"
+    ) +
+    annotate(
+      geom = "text",
+      x = 0.1, #top left
+      y = -0.275,
+      label = paste0('X only: r = ', formatC(myCor_pear_Xonly$estimate ,digits = 2,format = "f"), ", P = ", formatC(myCor_pear_Xonly$p.value, digits=2,format = "e")), hjust = 0,
+      vjust = 1,
+      size=2,
+      col="#ff9933"
+    ) +
+    annotate(
+      geom = "text",
+      x = 0.1, #top left
+      y = -0.325,
+      label = paste0('Y only: r = ', formatC(myCor_pear_Yonly$estimate ,digits = 2,format = "f"), ", P = ", formatC(myCor_pear_Yonly$p.value, digits=2,format = "e")), hjust = 0,
+      vjust = 1,
+      size=2,
+      col="#9966ff"
+    ) +
+    theme_classic(base_size = 10) +
+    theme(
+      axis.text = element_text(color = "black"), 
+      axis.ticks = element_line(color = "black", size = 0.25), 
+      axis.line = element_line(size = 0.25),
+      aspect.ratio=1, 
+      legend.position="none"
+    )  +  labs(
+      x= "Log2FC per Chr X",
+      y= "Log2FC per Chr Y"
+    )
+  dev.off()
+```
