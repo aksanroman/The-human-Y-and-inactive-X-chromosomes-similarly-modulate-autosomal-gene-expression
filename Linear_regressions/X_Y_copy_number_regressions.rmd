@@ -131,7 +131,7 @@ save(dds_x_y_lcl, file=paste0(myPath,"Linear_regressions/LCLs/dds_x_y_lcl.rda"))
 lcl_normCounts <- counts(dds_x_y_lcl, normalized=TRUE)
 # write.table(x=lcl_normCounts, file="lcl_normCounts.txt", sep="\t", quote=FALSE, col.names = TRUE, row.names = TRUE)
 
-dds_x_y_fib <- DESeqDataSetFromTximport(round(fib_counts), colData = sample_table_fib, design = ~ batch_libprep + y_count + x_count)
+dds_x_y_fib <- DESeqDataSetFromMatrix(round(fib_counts), colData = sample_table_fib, design = ~ batch_libprep + y_count + x_count)
 dds_x_y_fib <- DESeq(dds_x_y_fib, parallel = TRUE)
 save(dds_x_y_fib, file=paste0(myPath,"Linear_regressions/Fibroblasts/dds_x_y_fib.rda"))
 # load(file=paste0(myPath,"Linear_regressions/Fibroblasts/dds_x_y_fib.rda"))
