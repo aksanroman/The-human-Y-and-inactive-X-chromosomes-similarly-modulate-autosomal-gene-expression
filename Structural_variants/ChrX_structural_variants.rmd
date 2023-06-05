@@ -1,0 +1,436 @@
+---
+title: "Structural X and Y Chromosome Variants"
+output: html_notebook
+---
+
+#Setup
+```{r}
+myPath <- #ADD PATH TO GITHUB FOLDER
+
+suppressPackageStartupMessages(library("DESeq2"))
+library(ggplot2)
+
+#Set up sex chromosome gene lists, using gencode v84 as "Gene" list
+geneAnno <- na.omit(read.delim(file=paste0(myPath,"Annotations/geneAnno_proteinCoding_lncRNA_v107_20230426.txt"), stringsAsFactors = FALSE))
+#Main "Gene" name will be ensembl84
+colnames(geneAnno)[c(2,4:6)] <- c("Gene","chr","start","stop")
+#Only include genes in both v84 and v107
+geneAnno <- geneAnno[! is.na(geneAnno$Gene),]
+geneAnno <- geneAnno[! duplicated(geneAnno$gene_name.107) & ! geneAnno$gene_name.107 %in% c("") & ! duplicated(geneAnno$Gene),]
+geneAnno_x <- geneAnno[geneAnno$chr == "chrX",]
+geneAnno_y <- geneAnno[geneAnno$chr == "chrY",]
+X_genes_all <-as.character(geneAnno_x$Gene)
+Y_genes_all <-as.character(geneAnno_y$Gene)
+sexChrom_genes <- c(X_genes_all,Y_genes_all)
+PAR1_genes <- geneAnno_x[geneAnno_x$start < 2691188,]$Gene
+PAR2_genes <- c("SPRY3","VAMP7","IL9R","WASH6P")
+PAR_genes_all <- c(PAR1_genes,PAR2_genes)
+NPX_genes <- X_genes_all[! X_genes_all %in% PAR_genes_all]
+NPY_genes <- Y_genes_all[! Y_genes_all %in% PAR_genes_all]
+autosome_genes <- geneAnno[! geneAnno$chr %in% c("chrX","chrY"),"Gene"]
+
+NPX_ypairs = c("SOX3", "ZFX", "DDX3X", "KDM6A","KDM5C","USP9X","EIF1AX","RPS4X","AMELX","TXLNG","TMSB4X","NLGN4X","TBL1X","PRKX")
+NPY_xpairs = c("SRY", "ZFY", "DDX3Y", "UTY","KDM5D","USP9Y","EIF1AY","RPS4Y1","RPS4Y2", "AMELY","TXLNGY","TMSB4Y","NLGN4Y","TBL1Y","PRKY")
+```
+
+#Bring in metadata
+```{r}
+#read in the metadata table
+metadata <-read.delim(paste0(myPath,"Linear_regressions/metadata.txt"), stringsAsFactors = FALSE)
+
+#restrict to cell type and karyotype
+metadata_lcl <- metadata[metadata$karyotype %in% c("X","XX","XXX","XXXX","XY","XYY","XYYYY","XiXq_cen","XY_k1kp", "XY_pxpy") & metadata$cell_type == "LCL" & metadata$Technical_replicate == "N",]
+rownames(metadata_lcl) <- metadata_lcl$sample
+
+metadata_fib <- metadata[metadata$karyotype %in% c("X","XX","XXX","XiXq_cen","XiXq_prox","XiXq_dist") & metadata$cell_type == "Fib" & metadata$Technical_replicate == "N",]
+rownames(metadata_fib) <- metadata_fib$sample
+```
+
+##Processing raw RNA-seq data
+```{r, eval=FALSE}
+### The following code is used to run this analysis from the raw data. Skip below to begin with provided processed data file. ###
+## You must obtain access to the raw data through dbGaP (accession # phs002481). Download the fastq files, and run kallisto using the following command:
+# kallisto quant -i KALLISTO_INDEX_FILE -t 16 --bias --plaintext -o  /kallisto_OUTPUT_FOLDER/sampleName/ file1fastq.gz file2fastq.gz
+
+#Bring in list of Kallisto output files
+# myFileTable <- read.table(file = paste0(myPath,"all_rnaseq_files.txt"), row.names = 1, stringsAsFactors = FALSE)
+# myFiles <- myFileTable$V2
+# names(myFiles) <- rownames(myFileTable)
+# 
+# # subset file list for the samples I will use in this analysis
+# myFiles_lcl <- myFiles[metadata_lcl$sample]
+# myFiles_fib <- myFiles[metadata_fib$sample]
+# 
+# #run tximport to bring in mapped samples
+# suppressPackageStartupMessages(library("tximport"))
+# 
+# annofile <-read.delim(file=paste0(myPath,"Annotations/annotation_with_ERCC.txt"),sep = " ")
+# tx2gene <-data.frame("TXNAME" = annofile$transcript_id,"GENEID" = annofile$gene_name)
+# 
+# txi_strucvar_lcl <- tximport(myFiles_lcl, type = "kallisto", tx2gene = tx2gene)
+# save(txi_strucvar_lcl, file=paste0(myPath,"Structural_variants/LCLs/txi_strucvar_lcl.rda"))
+# load(file=paste0(myPath,"Structural_variants/LCLs/txi_strucvar_lcl.rda"))
+# write.table(x=txi_strucvar_lcl$counts, file="txi_strucvar_lcl_counts.txt", sep="\t", quote=FALSE, row.names = TRUE, col.names = TRUE)
+# write.table(x=txi_strucvar_lcl$abundance, file="txi_strucvar_lcl_TPM.txt", sep="\t", quote=FALSE, row.names = TRUE, col.names = TRUE)
+# 
+# # txi_strucvar_fib <- tximport(myFiles_fib, type = "kallisto", tx2gene = tx2gene)
+# # save(txi_strucvar_fib, file=paste0(myPath,"Structural_variants/Fibroblasts/txi_strucvar_fib.rda"))
+# load(file=paste0(myPath,"Structural_variants/Fibroblasts/txi_strucvar_fib.rda"))
+# write.table(x=txi_strucvar_fib$counts, file="txi_strucvar_fib_counts.txt", sep="\t", quote=FALSE, row.names = TRUE, col.names = TRUE)
+# write.table(x=txi_strucvar_fib$abundance, file="txi_strucvar_fib_TPM.txt", sep="\t", quote=FALSE, row.names = TRUE, col.names = TRUE)
+# 
+# #Adjust sample tables to match list of samples in txi
+# sample_table_lcl <- metadata_lcl[colnames(txi_strucvar_lcl$counts), c("karyotype","batch_libprep")]
+# sample_table_fib <- metadata_fib[colnames(txi_strucvar_fib$counts), c("karyotype","batch_libprep")]
+```
+
+#Load processed data
+```{r}
+lcl_strucvar_counts <- read.delim(file=paste0(myPath,"Structural_variants/txi_strucvar_lcl_counts.txt"), check.names = FALSE)
+fib_strucvar_counts <- read.delim(file=paste0(myPath,"Structural_variants/txi_strucvar_fib_counts.txt"), check.names = FALSE)
+
+#bring in expressed genes from linear regressions
+load(file=paste0(myPath,"Linear_regressions/LCLs/lcl_expressed.rda"))
+load(file=paste0(myPath,"Linear_regressions/Fibroblasts/fib_expressed.rda"))
+```
+
+#Do linear regressions with DESEQ2 and run batch corrections
+```{r}
+### THIS CODE CHUNK TAKES A LITTLE LONGER TO RUN. RUN IT ONCE AND THEN COMMENT OUT THE CODE AND LOAD FROM THE R DATA FILES.
+dds_strucvar_lcl <- DESeqDataSetFromMatrix(round(lcl_strucvar_counts), colData = sample_table_lcl, design = ~ batch_libprep + karyotype)
+dds_strucvar_lcl <- DESeq(dds_strucvar_lcl)
+save(dds_strucvar_lcl, file=paste0(myPath,"Structural_variants/dds_strucvar_lcl.rda"))
+
+#once you run this and save, you can save time by just loading the file using the code below:
+# load(file=paste0(myPath,"Structural_variants/LCLs/dds_strucvar_lcl.rda"))
+lcl_norm_counts <- counts(dds_strucvar_lcl,normalized=TRUE)
+
+dds_strucvar_fib <- DESeqDataSetFromMatrix(round(fib_strucvar_counts), colData = sample_table_fib, design = ~ batch_libprep + karyotype)
+dds_strucvar_fib <- DESeq(dds_strucvar_fib)
+save(dds_strucvar_fib, file=paste0(myPath,"Structural_variants/Fibroblasts/dds_strucvar_fib.rda"))
+
+# load(file=paste0(myPath,"Structural_variants/Fibroblasts/dds_strucvar_fib.rda"))
+fib_norm_counts <- counts(dds_strucvar_fib,normalized=TRUE)
+
+library(limma)
+
+#For plotting, we will use the normalized counts corrected for the other covariates.
+vst_dds_strucvar_lcl <- vst(dds_strucvar_lcl, blind=FALSE)
+
+#Control for batch
+vst_dds_strucvar_lcl_batch <- vst_dds_strucvar_lcl
+design0 <- model.matrix(~sample_table_lcl$karyotype)
+assay(vst_dds_strucvar_lcl_batch) <- removeBatchEffect(x = assay(vst_dds_strucvar_lcl_batch), batch = sample_table_lcl$batch_libprep, design=design0)
+
+##Fibroblasts
+vst_dds_strucvar_fib <- vst(dds_strucvar_fib, blind=FALSE)
+
+#Control for batch
+vst_dds_strucvar_fib_batch <- vst_dds_strucvar_fib
+design0 <- model.matrix(~sample_table_fib$karyotype)
+assay(vst_dds_strucvar_fib_batch) <- removeBatchEffect(x = assay(vst_dds_strucvar_fib_batch), batch = sample_table_fib$batch_libprep, design=design0)
+
+#Make a list of the karyotypes I want to plot for each.
+XiXq_list_fib <- c("X","XiXq_cen","XiXq_prox","XiXq_dist","XX","XXX") #fib
+XiXq_list_lcl <- c("X","XiXq_cen","XX","XXX","XXXX") #lcl
+
+k1kp_pxpy_lcl_xy <- c("X","XY_pxpy","XY_k1kp","XX","XXX","XY","XYY")
+k1kp_pxpy_lcl_x <- c("X","XY_pxpy","XY_k1kp","XX","XXX","XXXX")
+k1kp_pxpy_lcl_y <- c("X","XY_pxpy","XY_k1kp","XY","XYY")
+
+XiXq_transloc_lcl <- c("X","XiXq_cen","XY_k1kp","XY_pxpy","XX","XXX","XY","XYY")
+
+
+#bring in list of overlapping genes in LCLs and fibs
+lcl_fib_x_y_auto_res <- read.delim(file=paste0(myPath,"Linear_regressions/lcl_fib_XandY_results_auto_expressed.txt"), stringsAsFactors = FALSE)
+
+x_y_overlap_fib <- lcl_fib_x_y_auto_res[(! is.na(lcl_fib_x_y_auto_res$fib_padj_X)) & lcl_fib_x_y_auto_res$fib_padj_X < 0.05 & lcl_fib_x_y_auto_res$fib_padj_Y < 0.05,"Gene.y"]
+x_y_overlap_fib_up <- lcl_fib_x_y_auto_res[(! is.na(lcl_fib_x_y_auto_res$fib_padj_X)) & lcl_fib_x_y_auto_res$fib_padj_X < 0.05 & lcl_fib_x_y_auto_res$fib_padj_Y < 0.05 & lcl_fib_x_y_auto_res$fib_log2FC_X > 0,"Gene.y"]
+x_y_overlap_fib_down <- lcl_fib_x_y_auto_res[(! is.na(lcl_fib_x_y_auto_res$fib_padj_X)) & lcl_fib_x_y_auto_res$fib_padj_X < 0.05 & lcl_fib_x_y_auto_res$fib_padj_Y < 0.05 & lcl_fib_x_y_auto_res$fib_log2FC_X < 0,"Gene.y"]
+
+x_y_overlap_lcl <- lcl_fib_x_y_auto_res[(! is.na(lcl_fib_x_y_auto_res$lcl_padj_X)) & lcl_fib_x_y_auto_res$lcl_padj_X < 0.05 & lcl_fib_x_y_auto_res$lcl_padj_Y < 0.05,"Gene.y"]
+x_y_overlap_lcl_up <- lcl_fib_x_y_auto_res[(! is.na(lcl_fib_x_y_auto_res$lcl_padj_X)) & lcl_fib_x_y_auto_res$lcl_padj_X < 0.05 & lcl_fib_x_y_auto_res$lcl_padj_Y < 0.05 & lcl_fib_x_y_auto_res$lcl_log2FC_X > 0,"Gene.y"]
+x_y_overlap_lcl_down <- lcl_fib_x_y_auto_res[(! is.na(lcl_fib_x_y_auto_res$lcl_padj_X)) & lcl_fib_x_y_auto_res$lcl_padj_X < 0.05 & lcl_fib_x_y_auto_res$lcl_padj_Y < 0.05 & lcl_fib_x_y_auto_res$lcl_log2FC_X < 0,"Gene.y"]
+```
+
+
+# Plot gene expression of structural variants
+```{r}
+library(tidyr)
+data_summary <- function(x){
+  m <- median(x, na.rm=TRUE)
+  ymin <- quantile(x, na.rm=TRUE)[2]
+  ymax <- quantile(x, na.rm=TRUE)[4]
+  test <- c("y"=m,"ymin"=ymin,"ymax"=ymax)
+  names(test) <- c("y","ymin","ymax")
+  return(test)
+}
+
+#NPY and PAR genes
+myKaryo_lcl <- c("X","XiXq_cen","XY_k1kp","XY_pxpy","XX","XXX","XXXX","XY","XYY","XYYYY")
+
+
+lcl_NPX_NPY_genes <- intersect(NPX_ypairs,lcl_expressed$expXGenes)
+lcl_par_NPX_NPY_genes <- c(lcl_NPX_NPY_genes, lcl_expressed$expPARGenes, "XIST")
+lcl_par_NPX_NPY_genes <- setdiff(lcl_par_NPX_NPY_genes, PAR2_genes)
+lcl_par_NPX_NPY_genes_allData <- geneAnno[geneAnno$Gene %in% lcl_par_NPX_NPY_genes, ]
+lcl_par_NPX_NPY_genes_order <- lcl_par_NPX_NPY_genes_allData[order(lcl_par_NPX_NPY_genes_allData$start) ,"Gene"]
+lcl_par_NPX_NPY_genes_edit <- c("PLCXD1","GTPBP6","PPP2R3B","IL3RA","SLC25A6",
+                            "ASMTL","P2RY8","AKAP17A","DHRSX","ZBED1",
+                            "CD99","PRKX","TBL1X","TMSB4X","TXLNG","EIF1AX",
+                            "ZFX","USP9X","DDX3X","KDM6A", "KDM5C","RPS4X","XIST")
+
+
+metadata_lcl_with_expn <- data.frame(metadata_lcl[,c(1:2)], t(lcl_norm_counts[lcl_par_NPX_NPY_genes_edit,metadata_lcl$sample]))
+
+metadata_lcl_with_expn_gather <- gather(metadata_lcl_with_expn, key="Gene", value="Normalized_counts", 3:25)
+metadata_lcl_with_expn_gather$karyotype <- factor(metadata_lcl_with_expn_gather$karyotype, levels = myKaryo_lcl)
+metadata_lcl_with_expn_gather$Gene <- factor(metadata_lcl_with_expn_gather$Gene, 
+                                             levels = lcl_par_NPX_NPY_genes_edit)
+myPlot <- ggplot(data=metadata_lcl_with_expn_gather, mapping = aes(x=karyotype, y=Normalized_counts)) + 
+  geom_jitter(width = 0.1, color="#00000080", stroke=0, size=0.75) + 
+  geom_violin(color="#000000", fill="#00000020", scale="width", size=0.25)  +
+  stat_summary(fun.data=data_summary, size=0.25, pch=20) +
+  theme_classic(base_size=8) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust=1),
+      axis.text = element_text(color = "black"), 
+      axis.ticks = element_line(color = "black", size = 0.25), 
+      axis.line = element_line(size = 0.25)
+      ) + labs(x="Karyotype",y="Normalized counts")
+
+
+pdf(file="strucVar_exp_PAR_NPX_genes_lcl.pdf", width=8.25, height=10)
+myPlot + facet_wrap( ~ Gene, nrow=6, scales="free_y") + labs(title= "Expressed PAR & NPX genes with Y pairs, LCLs")
+dev.off()
+
+
+#NPY genes with NPX homologs!
+lcl_NPY_genes <- intersect(NPY_xpairs,lcl_expressed$expYGenes)
+lcl_NPY_genes_allData <- geneAnno[geneAnno$Gene %in% lcl_NPY_genes, ]
+lcl_NPY_genes_order <- lcl_NPY_genes_allData[order(lcl_NPY_genes_allData$start) ,"Gene"]
+
+metadata_lcl_with_expn <- data.frame(metadata_lcl[,c(1:2)], t(lcl_norm_counts[lcl_NPY_genes_order,metadata_lcl$sample]))
+
+metadata_lcl_with_expn_gather <- gather(metadata_lcl_with_expn, key="Gene", value="Normalized_counts", 3:13)
+metadata_lcl_with_expn_gather$karyotype <- factor(metadata_lcl_with_expn_gather$karyotype, levels = myKaryo_lcl)
+metadata_lcl_with_expn_gather$Gene <- factor(metadata_lcl_with_expn_gather$Gene,
+                                             levels = lcl_NPY_genes_order)
+
+myPlot <- ggplot(data=metadata_lcl_with_expn_gather, mapping = aes(x=karyotype, y=Normalized_counts)) + 
+  geom_jitter(width = 0.1, color="#00000080", stroke=0, size=0.75) + 
+  geom_violin(color="#000000", fill="#00000020", scale="width", size=0.25)  +
+  stat_summary(fun.data=data_summary, size=0.25, pch=20) +
+  theme_classic(base_size=8) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust=1),
+      axis.text = element_text(color = "black"), 
+      axis.ticks = element_line(color = "black", size = 0.25), 
+      axis.line = element_line(size = 0.25)
+      ) + labs(x="Karyotype",y="Normalized counts")
+
+
+pdf(file="strucVar_exp_NPY_genes_lcl.pdf", width=8.25, height=5)
+myPlot + facet_wrap( ~ Gene, nrow=3, scales="free_y") + labs(title= "Expressed NPY genes with X pair, LCLs")
+dev.off()
+
+
+### FIBROBLASTS ####
+#NPX and PAR genes
+myKaryo_fib <- c("X","XiXq_cen","XiXq_prox","XiXq_dist","XX","XXX")
+
+fib_NPX_NPY_genes <- intersect(NPX_ypairs,fib_expressed$expXGenes)
+fib_par_NPX_NPY_genes <- c(fib_NPX_NPY_genes, fib_expressed$expPARGenes,"XIST")
+fib_par_NPX_NPY_genes <- setdiff(fib_par_NPX_NPY_genes, PAR2_genes)
+fib_par_NPX_NPY_genes_allData <- geneAnno[geneAnno$Gene %in% fib_par_NPX_NPY_genes, ]
+fib_par_NPX_NPY_genes_order <- fib_par_NPX_NPY_genes_allData[order(fib_par_NPX_NPY_genes_allData$start) ,"Gene"]
+fib_par_NPX_NPY_genes_edit <- c("PLCXD1","GTPBP6","PPP2R3B","SLC25A6",
+                            "ASMTL","AKAP17A","DHRSX","ZBED1",
+                            "CD99","PRKX","TBL1X","TMSB4X","TXLNG","EIF1AX",
+                            "ZFX","USP9X","DDX3X","KDM6A", "KDM5C","RPS4X","XIST")
+
+metadata_fib_with_expn <- data.frame(metadata_fib[,c(1:2)], t(fib_norm_counts[fib_par_NPX_NPY_genes_edit,metadata_fib$sample]))
+
+metadata_fib_with_expn_gather <- gather(metadata_fib_with_expn, key="Gene", value="Normalized_counts", 3:23)
+metadata_fib_with_expn_gather$karyotype <- factor(metadata_fib_with_expn_gather$karyotype, levels = myKaryo_fib)
+metadata_fib_with_expn_gather$Gene <- factor(metadata_fib_with_expn_gather$Gene, 
+                                             levels = fib_par_NPX_NPY_genes_edit)
+myPlot <- ggplot(data=metadata_fib_with_expn_gather, mapping = aes(x=karyotype, y=Normalized_counts)) + 
+  geom_jitter(width = 0.1, color="#00000080", stroke=0, size=0.75) + 
+  geom_violin(color="#000000", fill="#00000020", scale="width", size=0.25)  +
+  stat_summary(fun.data=data_summary, size=0.25, pch=20) +
+  theme_classic(base_size=8) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust=1),
+      axis.text = element_text(color = "black"), 
+      axis.ticks = element_line(color = "black", size = 0.25), 
+      axis.line = element_line(size = 0.25)
+      ) + labs(x="Karyotype",y="Normalized counts")
+
+
+pdf(file="strucVar_exp_PAR_NPX_genes_fib.pdf", width=6.8, height=10)
+myPlot + facet_wrap( ~ Gene, nrow=6, scales="free_y") + labs(title= "Expressed PAR & NPX genes with Y pairs, Fibroblasts")
+dev.off()
+
+```
+
+## PCA LCL XiXq
+```{r}
+library(ggrepel)
+#plot PCA without and with batch effect correction
+plotPCA(vst_dds_strucvar_lcl,"batch_libprep")
+plotPCA(vst_dds_strucvar_lcl_batch,"batch_libprep")
+
+
+myCol <- c("#D3D3D3","#a6cee3","#989898","#606060","#000000")
+
+#XiXq
+#select LCL samples
+mySamples_xixq_lcl <- data.frame(sample_table_lcl[sample_table_lcl$karyotype %in% XiXq_list_lcl, ], "condition" = rep(x=0))
+mySamples_xixq_lcl[mySamples_xixq_lcl$karyotype == "XiXq_cen","condition"] <- 1
+mySamples_xixq_lcl$condition <- as.factor(mySamples_xixq_lcl$condition)
+mySamples_xixq_lcl$karyotype <- factor(x = mySamples_xixq_lcl$karyotype, levels = XiXq_list_lcl)
+
+
+pdf(file="pca_x_resp_LCL_overlap_batch_xyoverlap_0.05.pdf",height=1.9, width=1.9)
+
+#X-Y overlap p<0.05
+lcl_x_y_overlap_pca_data <- data.frame("Gene" = x_y_overlap_lcl, assay(vst_dds_strucvar_lcl_batch[x_y_overlap_lcl,rownames(mySamples_xixq_lcl)]), check.names = FALSE)
+write.table(x=lcl_x_y_overlap_pca_data, file="lcl_x_y_overlap_pca_data.txt", quote=FALSE, sep="\t", row.names = FALSE, col.names = TRUE)
+
+
+plotPCA(vst_dds_strucvar_lcl_batch[x_y_overlap_lcl,rownames(mySamples_xixq_lcl)],intgroup=c("karyotype"))
+lcl_x_y_overlap_pca <- plotPCA(vst_dds_strucvar_lcl_batch[x_y_overlap_lcl,rownames(mySamples_xixq_lcl)],intgroup=c("karyotype"), 
+                               returnData = TRUE)
+lcl_x_y_overlap_pca <- data.frame(droplevels.data.frame(x = lcl_x_y_overlap_pca, except = c(1,2)), "condition" = mySamples_xixq_lcl$condition)
+
+ggplot(lcl_x_y_overlap_pca, aes(x=(-PC1), y=PC2, color=group)) +
+  geom_point(stroke=0) +
+  scale_color_manual(values = myCol) +
+  geom_text_repel(data=lcl_x_y_overlap_pca[lcl_x_y_overlap_pca$condition == 1,], 
+                  mapping = aes(x=(-PC1), y=PC2, label=name), size=2) +
+  theme_classic(base_size = 8) + 
+  theme(
+    axis.text = element_text(color = "black"), 
+    axis.ticks = element_line(color = "black", size = 0.25), 
+    axis.line = element_line(size = 0.25),
+    plot.title = element_text(hjust = 0.5),
+    axis.text.x = element_text(hjust = 0.5),
+    legend.position = "none",
+  ) +
+  labs(title="X-Y Overlap, LCL, p<0.05", 
+       x="PC1: 26% variance", y="PC2: 8% variance")
+dev.off()
+```
+
+##PCA Fib XiXq
+```{r}
+#plot PCA without and with batch effect correction
+plotPCA(vst_dds_strucvar_fib,"batch_libprep")
+plotPCA(vst_dds_strucvar_fib_batch,"batch_libprep")
+
+suppressPackageStartupMessages(library(RColorBrewer))
+myCol <- c("#D3D3D3","#a6cee3", "#b2df8a", "#1f78b4", "#989898","#606060","#000000") 
+mySize <- c(1.5, 2.25)
+
+#XiXq
+#select fib samples
+mySamples_xixq_fib <- data.frame(sample_table_fib[sample_table_fib$karyotype %in% XiXq_list_fib, ],"condition" = as.numeric(rep(x = 0)))
+#add column with StrucVar yes/no
+mySamples_xixq_fib[mySamples_xixq_fib$karyotype == "XiXq_cen","condition"] <- 1
+mySamples_xixq_fib[mySamples_xixq_fib$karyotype == "XiXq_prox","condition"] <- 1
+mySamples_xixq_fib[mySamples_xixq_fib$karyotype == "XiXq_dist","condition"] <- 1
+
+mySamples_xixq_fib$condition <- as.factor(mySamples_xixq_fib$condition)
+
+pdf(file="pca_x_resp_fib_overlap_batch_xyoverlap_0.05.pdf",height=1.9, width=1.9)
+
+#X-Y overlap p<0.05
+fib_x_y_overlap_pca_data <- data.frame("Gene" = x_y_overlap_fib, assay(vst_dds_strucvar_fib_batch[x_y_overlap_fib,rownames(mySamples_xixq_fib)]), check.names = FALSE)
+write.table(x=fib_x_y_overlap_pca_data, file="fib_x_y_overlap_pca_data.txt", quote=FALSE, sep="\t", row.names = FALSE, col.names = TRUE)
+
+plotPCA(vst_dds_strucvar_fib_batch[x_y_overlap_fib,rownames(mySamples_xixq_fib)],intgroup=c("karyotype"))
+fib_x_y_overlap_pca <- plotPCA(vst_dds_strucvar_fib_batch[x_y_overlap_fib,rownames(mySamples_xixq_fib)],intgroup=c("karyotype"), 
+                               returnData = TRUE)
+fib_x_y_overlap_pca <- data.frame(droplevels.data.frame(x = fib_x_y_overlap_pca, except = c(1,2)), "condition" = mySamples_xixq_fib$condition)
+
+ggplot(fib_x_y_overlap_pca, aes(x=(-PC1), y=PC2, color=group)) +
+  geom_point(stroke=0) +
+  scale_color_manual(values = myCol) +
+  geom_text_repel(data=fib_x_y_overlap_pca[fib_x_y_overlap_pca$condition == 1,], 
+                  mapping = aes(x=(-PC1), y=PC2, label=name), size=2) +
+  theme_classic(base_size = 8) + 
+  theme(
+    axis.text = element_text(color = "black"), 
+    axis.ticks = element_line(color = "black", size = 0.25), 
+    axis.line = element_line(size = 0.25),
+    plot.title = element_text(hjust = 0.5),
+    axis.text.x = element_text(hjust = 0.5),
+    legend.position = "none",
+  ) +
+  labs(title="X-Y Overlap, fib, p<0.05", 
+       x="PC1: 38% variance", y="PC2: 9% variance")
+dev.off()
+```
+
+
+## PCA LCL pxpy and k1kp
+```{r}
+#select lcl samples
+
+k1kp_pxpy_lcl_xx <- c("X","XY_pxpy","XY_k1kp","XX","XXX","XXXX")
+k1kp_pxpy_lcl_xy <- c("XY_pxpy","XY_k1kp","XY","XYY","XYYYY")
+k1kp_pxpy_lcl_xx_xy <- c("X","XY_pxpy","XY_k1kp","XX","XY","XXX","XYY","XXXX","XYYYY")
+mySamples_k1kp_pxpy_lcl_xx_xy <- sample_table_lcl[sample_table_lcl$karyotype %in% k1kp_pxpy_lcl_xx_xy, ]
+mySamples_k1kp_pxpy_lcl_xx_xy$karyotype <- factor(x = mySamples_k1kp_pxpy_lcl_xx_xy$karyotype, levels = k1kp_pxpy_lcl_xx_xy) 
+mySamples_k1kp_pxpy_lcl_xx_xy <- data.frame(sample_table_lcl[sample_table_lcl$karyotype %in% k1kp_pxpy_lcl_xx_xy, ], "condition" = rep(x=0))
+mySamples_k1kp_pxpy_lcl_xx_xy[mySamples_k1kp_pxpy_lcl_xx_xy$karyotype %in% c("XY_k1kp","XY_pxpy"),"condition"] <- 1
+mySamples_k1kp_pxpy_lcl_xx_xy$condition <- as.factor(mySamples_k1kp_pxpy_lcl_xx_xy$condition)
+
+
+mySamples_k1kp_pxpy_lcl_xx <- sample_table_lcl[sample_table_lcl$karyotype %in% k1kp_pxpy_lcl_xx, ]
+mySamples_k1kp_pxpy_lcl_xx$karyotype <- factor(x = mySamples_k1kp_pxpy_lcl_xx$karyotype, levels = k1kp_pxpy_lcl_xx)
+
+mySamples_k1kp_pxpy_lcl_xy <- sample_table_lcl[sample_table_lcl$karyotype %in% k1kp_pxpy_lcl_xy, ]
+mySamples_k1kp_pxpy_lcl_xy$karyotype <- factor(x = mySamples_k1kp_pxpy_lcl_xy$karyotype, levels = k1kp_pxpy_lcl_xy)
+
+xx_Col <- c("#d6d4e0","#5b9aa0","#e06377","#f9ccac","#e0876a","#b8a9c9","#622569")
+
+xx_xy_Col <- c("#fed4b3","#fda968", "#fd7d1c","#ca5902", "#aeabd3","#1c1cfd","#1cc4fd","#7e79b9","#544f96")
+
+myCol <- c("#D3D3D3","#989898","#606060","#000000","#989898","#5b9aa0","#e06377","#606060","#000000")
+
+
+mySize <- c(1.5, 2.25)
+
+pdf(file="pca_k1kp_pxpy_lcl_batchcorrect_xyoverlap_0.05.pdf",height=1.9,width=2.65)
+#xy overlap 0.05
+
+lcl_xy_overlap_pca_transloc_data <- data.frame("Gene" = x_y_overlap_lcl, assay(vst_dds_strucvar_lcl_batch[x_y_overlap_lcl,rownames(mySamples_k1kp_pxpy_lcl_xx_xy)]), check.names = FALSE)
+write.table(x=lcl_xy_overlap_pca_transloc_data, file="lcl_xy_overlap_pca_transloc_data.txt", quote=FALSE, sep="\t", row.names = FALSE, col.names = TRUE)
+
+plotPCA(vst_dds_strucvar_lcl_batch[x_y_overlap_lcl,rownames(mySamples_k1kp_pxpy_lcl_xx_xy)],
+        intgroup=c("karyotype"))
+lcl_xy_overlap_pca <- plotPCA(vst_dds_strucvar_lcl_batch[x_y_overlap_lcl,rownames(mySamples_k1kp_pxpy_lcl_xx_xy)],
+        intgroup=c("karyotype"), returnData = TRUE)
+lcl_xy_overlap_pca <- data.frame(droplevels.data.frame(x = lcl_xy_overlap_pca, except = c(1,2)), "condition"= mySamples_k1kp_pxpy_lcl_xx_xy$condition)
+
+ggplot(lcl_xy_overlap_pca, aes(x=(-PC1), y=PC2, color=group)) +
+  geom_point(stroke=0) +
+  scale_color_manual(values = myCol) +
+  geom_text_repel(data=lcl_xy_overlap_pca[lcl_xy_overlap_pca$condition == 1,], 
+                  mapping = aes(x=(-PC1), y=PC2, label=name), size=2) +
+  theme_classic(base_size = 8) + 
+  theme(
+    axis.text = element_text(color = "black"), 
+    axis.ticks = element_line(color = "black", size = 0.25), 
+    axis.line = element_line(size = 0.25),
+    plot.title = element_text(hjust = 0.5),
+    axis.text.x = element_text(hjust = 0.5),
+    legend.position = "none",
+  ) +
+  labs(title="X-Y Overlap, LCL, p<0.05", 
+       x="PC1: 26% variance", y="PC2: 8% variance")
+dev.off()
+```
+
