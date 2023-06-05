@@ -1,7 +1,7 @@
 # README
 This repository contains code necessary to recreate analyses in: 
 
-<Add paper citation>
+*Add paper citation*
 
 Each folder contains code and processed data that may be used to recreate one or more figures and tables:  
 
