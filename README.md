@@ -23,4 +23,4 @@ Hormone_analysis: Fig. S5; Table S3
   
 Motif_analysis: Table S8, S11
   
-ZFX_ChIPseq: Talbe S9
+ZFX_ChIPseq: Table S9
