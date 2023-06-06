@@ -1,0 +1,173 @@
+---
+title: "Modeling expression as a function of X chromosome copy number, females only"
+output: html_notebook
+---
+
+#Setup
+```{r}
+myPath <- "/lab/solexa_page/adrianna/U01_RNAseq/2021_August_Analysis/Paper2_Github/"  #ADD PATH TO GITHUB FOLDER
+#load DESeq2 library
+suppressPackageStartupMessages(library("DESeq2"))
+
+#Bring in functions!
+source(file=paste0(myPath,"Scripts/Function_ASR-QQmanhattan_20221103.R"))
+source(file=paste0(myPath,"Scripts/Function_DESeqManhattan_noM_col_auto_20221103.R"))
+source(file=paste0(myPath,"Scripts/Function_allResults_20221103.R"))
+source(file=paste0(myPath,"Scripts/Function_paper2_corrPlot_deming_20230419.R"))
+
+#Set up sex chromosome gene lists, using gencode v84 as "Gene" list
+#This gene annotation includes protein coding genes and lncRNAs
+geneAnno <- na.omit(read.delim(file=paste0(myPath,"Annotations/geneAnno_proteinCoding_lncRNA_v107_20230426.txt"), stringsAsFactors = FALSE))
+#Main "Gene" name will be ensembl84
+colnames(geneAnno)[c(2,4:6)] <- c("Gene","chr","start","stop")
+#Only include genes in both v84 and v107
+geneAnno <- geneAnno[! is.na(geneAnno$Gene),]
+geneAnno <- geneAnno[! duplicated(geneAnno$gene_name.107) & ! geneAnno$gene_name.107 %in% c("") & ! duplicated(geneAnno$Gene),]
+geneAnno_x <- geneAnno[geneAnno$chr == "chrX",]
+geneAnno_y <- geneAnno[geneAnno$chr == "chrY",]
+X_genes_all <-as.character(geneAnno_x$Gene)
+Y_genes_all <-as.character(geneAnno_y$Gene)
+sexChrom_genes <- c(X_genes_all,Y_genes_all)
+PAR1_genes <- geneAnno_x[geneAnno_x$start < 2691188,]$Gene
+PAR2_genes <- c("SPRY3","VAMP7","IL9R","WASH6P")
+PAR_genes_all <- c(PAR1_genes,PAR2_genes)
+NPX_genes <- X_genes_all[! X_genes_all %in% PAR_genes_all]
+NPY_genes <- Y_genes_all[! Y_genes_all %in% PAR_genes_all]
+autosome_genes <- geneAnno[! geneAnno$chr %in% c("chrX","chrY"),"Gene"]
+```
+
+#Bring in metadata
+```{r}
+#read in the metadata table
+metadata <-read.delim(paste0(myPath,"Linear_regressions/metadata.txt"), stringsAsFactors = FALSE)
+
+#restrict to cell type and karyotype
+metadata_lcl <- metadata[metadata$karyotype %in% c("X","XX","XXX","XXXX") & metadata$cell_type == "LCL" & metadata$Technical_replicate == "N",]
+rownames(metadata_lcl) <- metadata_lcl$sample
+
+metadata_fib <- metadata[metadata$karyotype %in% c("X","XX","XXX","XXXX") & metadata$cell_type == "Fib" & metadata$Technical_replicate == "N",]
+rownames(metadata_fib) <- metadata_fib$sample
+```
+
+##Processing raw RNA-seq data
+```{r, eval=FALSE}
+### The following code is used to run this analysis from the raw data. Skip below to begin with provided processed data file. ###
+## You must obtain access to the raw data through dbGaP (accession # phs002481). Download the fastq files, and run kallisto using the following command:
+# kallisto quant -i KALLISTO_INDEX_FILE -t 16 --bias --plaintext -o  /kallisto_OUTPUT_FOLDER/sampleName/ file1fastq.gz file2fastq.gz
+
+#Bring in list of Kallisto output files
+# myFileTable <- read.table(file ="all_rnaseq_files.txt", row.names = 1, stringsAsFactors = FALSE)
+# 
+# # myFileTable <- read.table(file =  "PATH TO LIST OF FILES", row.names = 1, stringsAsFactors = FALSE)
+# myFiles <- myFileTable$V2
+# names(myFiles) <- rownames(myFileTable)
+# 
+# # subset file list for the samples I will use in this analysis
+# myFiles_lcl <- myFiles[metadata_lcl$sample]
+# myFiles_fib <- myFiles[metadata_fib$sample]
+# 
+# 
+# #run tximport to bring in mapped samples
+# suppressPackageStartupMessages(library("tximport"))
+# 
+# annofile <-read.delim(file=paste0(myPath,"Annotations/annotation_with_ERCC.txt"),sep = " ")
+# tx2gene <-data.frame("TXNAME" = annofile$transcript_id,"GENEID" = annofile$gene_name)
+# 
+# txi_lcl <- tximport(myFiles_lcl, type = "kallisto", tx2gene = tx2gene)
+# save(txi_lcl, file = paste0(myPath,"Linear_regressions/Subset_no_Y/txi_lcl.rda"))
+load(file=paste0(myPath,"Linear_regressions/Subset_no_Y/txi_lcl.rda"))
+write.table(x=txi_lcl$counts, file="lcl_txi_counts.txt", sep="\t", quote=FALSE, row.names = TRUE, col.names = TRUE)
+write.table(x=txi_lcl$abundance, file="lcl_txi_TPM.txt", sep="\t", quote=FALSE, row.names = TRUE, col.names = TRUE)
+# 
+# txi_fib <- tximport(myFiles_fib, type = "kallisto", tx2gene = tx2gene)
+# save(txi_fib, file=paste0(myPath,"Linear_regressions/Subset_no_Y/txi_fib.rda"))
+load(file=paste0(myPath,"Linear_regressions_old/Subset_no_Y/txi_fib.rda"))
+write.table(x=txi_fib$counts, file="fib_txi_counts.txt", sep="\t", quote=FALSE, row.names = TRUE, col.names = TRUE)
+write.table(x=txi_fib$abundance, file="fib_txi_TPM.txt", sep="\t", quote=FALSE, row.names = TRUE, col.names = TRUE)
+
+
+#Adjust sample tables to match list of samples in txi
+sample_table_lcl <- metadata_lcl[colnames(txi_lcl$counts), c("x_count","y_count","batch_libprep")]
+sample_table_fib <- metadata_fib[colnames(txi_fib$counts), c("x_count","y_count","batch_libprep")]
+```
+
+#Load processed data
+```{r}
+lcl_counts <- read.delim(file=paste0(myPath,"Linear_regressions/Subset_no_Y/lcl_txi_counts.txt"), check.names = FALSE)
+fib_counts <- read.delim(file=paste0(myPath,"Linear_regressions/Subset_no_Y/fib_txi_counts.txt"), check.names=FALSE)
+
+load(file=paste0(myPath,"Linear_regressions/LCLs/lcl_expressed.rda"))
+load(file=paste0(myPath,"Linear_regressions/Fibroblasts/fib_expressed.rda"))
+```
+
+#Do linear regressions with DESEQ2
+```{r}
+### THIS CODE CHUNK TAKES A LITTLE LONGER TO RUN. RUN IT ONCE AND THEN COMMENT OUT THE CODE AND LOAD FROM THE R DATA FILES.
+#If you can generate the tximport files, use DESeqDataSetFromTximport()
+dds_x_lcl <- DESeqDataSetFromMatrix(round(lcl_counts), colData = sample_table_lcl, design = ~ batch_libprep + x_count)
+dds_x_lcl <- DESeq(dds_x_lcl)
+save(dds_x_lcl, file="dds_x_lcl.rda")
+# load(file="dds_x_lcl.rda")
+
+lcl_normCounts <- counts(dds_x_lcl, normalized=TRUE)
+# write.table(x=lcl_normCounts, file="lcl_normCounts.txt", sep="\t", quote=FALSE, col.names = TRUE, row.names = TRUE)
+
+dds_x_fib <- DESeqDataSetFromMatrix(round(fib_counts), colData = sample_table_fib, design = ~ batch_libprep + x_count)
+dds_x_fib <- DESeq(dds_x_fib)
+save(dds_x_fib, file="dds_x_fib.rda")
+# load(file="dds_x_fib.rda")
+
+fib_normCounts <- counts(dds_x_fib, normalized=TRUE)
+# write.table(x=fib_normCounts, file="fib_normCounts.txt", sep="\t", quote=FALSE, col.names = TRUE, row.names = TRUE)
+```
+
+## lcl X Regression Results
+```{r}
+#Run results (Design ~ batch_libprep + y_count + x_count)
+lcl_x_results <- allResults(mydds = dds_x_lcl, myVar = "x_count", myAnno = geneAnno, expGenes = lcl_expressed, myTitle = "lcl_x_count",myalpha = 0.05, pdfWidth = 3.5, pdfHeight = 3, myYlim = c(-2,1.5))
+```
+
+## fib X Regression Results
+```{r}
+#Run results (Design ~ batch_libprep + y_count + x_count)
+fib_x_results <- allResults(mydds = dds_x_fib, myVar = "x_count", myAnno = geneAnno, expGenes = fib_expressed, myTitle = "fib_x_count",myalpha = 0.05, pdfWidth = 3.5, pdfHeight = 3, myYlim = c(-2,1.5))
+```
+
+#Compare this regression with the regression using all samples
+```{r}
+#Bring in the autosomal genes from the regular X regression in LCL and fib
+reg_lcl_x_res <- read.delim(file=paste0(myPath,"Linear_regressions/LCLs/lcl_x_count_auto_expressed.txt"), stringsAsFactors = FALSE)
+reg_lcl_x_res_sig <- reg_lcl_x_res[! is.na(reg_lcl_x_res$padj) & reg_lcl_x_res$padj < 0.05,]
+reg_fib_x_res <- read.delim(file=paste0(myPath,"Linear_regressions/Fibroblasts/fib_x_count_auto_expressed.txt"), stringsAsFactors = FALSE)
+reg_fib_x_res_sig <- reg_fib_x_res[! is.na(reg_fib_x_res$padj) & reg_fib_x_res$padj < 0.05,]
+
+myData <- data.frame("x"= reg_lcl_x_res_sig[,"log2FoldChange"], "y" = lcl_x_results$res_anno_exp[reg_lcl_x_res_sig$Gene, "log2FoldChange"])
+paper2_corrPlot_deming(myData = myData, myTitle = "lcl_X_response_all_v_noY.pdf", myWidth = 2.35, myHeight = 2.35, myXlab = "Log2FC per Chr X, all samples", myYlab = "Log2FC per Chr Y, no Y", demingBehind = TRUE)
+
+myData <- data.frame("x"= reg_fib_x_res_sig[,"log2FoldChange"], "y" = fib_x_results$res_anno_exp[reg_fib_x_res_sig$Gene, "log2FoldChange"])
+paper2_corrPlot_deming(myData = myData, myTitle = "fib_X_response_all_v_noY.pdf", myWidth = 2.35, myHeight = 2.35, myXlab = "Log2FC per Chr X, all samples", myYlab = "Log2FC per Chr Y, no Y", demingBehind = TRUE)
+```
+
+#Compare male vs female only regressions for X response!
+```{r}
+#bring in male regression
+lcl_x_count_1Y <- read.delim(file=paste0(myPath,"Linear_regressions/Subset_one_Y/lcl_x_count_auto_expressed.txt"), stringsAsFactors = FALSE)
+row.names(lcl_x_count_1Y) <- lcl_x_count_1Y$Gene
+fib_x_count_1Y <- read.delim(file=paste0(myPath,"Linear_regressions/Subset_one_Y/fib_x_count_auto_expressed.txt"), stringsAsFactors = FALSE)
+row.names(fib_x_count_1Y) <- fib_x_count_1Y$Gene
+
+
+#Still plotting normal sig genes!
+myData <- data.frame("y"= lcl_x_count_1Y[reg_lcl_x_res_sig$Gene,"log2FoldChange"], 
+                     "x" = lcl_x_results$res_anno_exp[reg_lcl_x_res_sig$Gene, "log2FoldChange"])
+
+paper2_corrPlot_deming(myData = myData, myTitle = "lcl_X_response_male_v_female.pdf", myWidth = 2.35, myHeight = 2.35, myXlab = "Log2FC per Chr X, female samples (0Y)", myYlab = "Log2FC per Chr X, male samples (1Y)", demingBehind = TRUE)
+
+myData <- data.frame("y"= fib_x_count_1Y[reg_fib_x_res_sig$Gene,"log2FoldChange"], 
+                     "x" = fib_x_results$res_anno_exp[reg_fib_x_res_sig$Gene, "log2FoldChange"])
+
+
+paper2_corrPlot_deming(myData = myData, myTitle = "fib_X_response_male_v_female.pdf", myWidth = 2.35, myHeight = 2.35, myXlab = "Log2FC per Chr X, female samples (0Y)", myYlab = "Log2FC per Chr X, male samples (1Y)", demingBehind = TRUE)
+
+```
+
