@@ -5,7 +5,7 @@ output: html_notebook
 
 #Setup
 ```{r}
-myPath <- "/lab/solexa_page/adrianna/U01_RNAseq/2021_August_Analysis/Paper2_Github/"  #ADD PATH TO GITHUB FOLDER
+myPath <-   #ADD PATH TO GITHUB FOLDER
 #load DESeq2 library
 suppressPackageStartupMessages(library("DESeq2"))
 
@@ -168,6 +168,5 @@ myData <- data.frame("y"= fib_x_count_1Y[reg_fib_x_res_sig$Gene,"log2FoldChange"
 
 
 paper2_corrPlot_deming(myData = myData, myTitle = "fib_X_response_male_v_female.pdf", myWidth = 2.35, myHeight = 2.35, myXlab = "Log2FC per Chr X, female samples (0Y)", myYlab = "Log2FC per Chr X, male samples (1Y)", demingBehind = TRUE)
-
 ```
 
