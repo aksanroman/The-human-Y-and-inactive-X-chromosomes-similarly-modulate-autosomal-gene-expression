@@ -1,0 +1,205 @@
+---
+title: "Modeling  expression as a function of X and Y copy number, using autosomal genes only"
+output: html_notebook
+---
+
+#Setup
+```{r}
+myPath <- #ADD PATH TO GITHUB FOLDER
+#load DESeq2 library
+suppressPackageStartupMessages(library("DESeq2"))
+
+#Bring in functions!
+source(file=paste0(myPath,"Scripts/Function_ASR-QQmanhattan_20221103.R"))
+source(file=paste0(myPath,"Scripts/Function_DESeqManhattan_noM_col_auto_20221103.R"))
+source(file=paste0(myPath,"Scripts/Function_allResults_20221103.R"))
+source(file=paste0(myPath,"Scripts/Function_twoGroupVenn_geneNames_20221103.R"))
+
+#Set up sex chromosome gene lists, using gencode v84 as "Gene" list
+#This gene annotation includes protein coding genes and lncRNAs
+geneAnno <- na.omit(read.delim(file=paste0(myPath,"Annotations/geneAnno_proteinCoding_lncRNA_v107_20230426.txt"), stringsAsFactors = FALSE))
+#Main "Gene" name will be ensembl84
+colnames(geneAnno)[c(2,4:6)] <- c("Gene","chr","start","stop")
+#Only include genes in both v84 and v107
+geneAnno <- geneAnno[! is.na(geneAnno$Gene),]
+geneAnno <- geneAnno[! duplicated(geneAnno$gene_name.107) & ! geneAnno$gene_name.107 %in% c("") & ! duplicated(geneAnno$Gene),]
+geneAnno_x <- geneAnno[geneAnno$chr == "chrX",]
+geneAnno_y <- geneAnno[geneAnno$chr == "chrY",]
+X_genes_all <-as.character(geneAnno_x$Gene)
+Y_genes_all <-as.character(geneAnno_y$Gene)
+sexChrom_genes <- c(X_genes_all,Y_genes_all)
+PAR1_genes <- geneAnno_x[geneAnno_x$start < 2691188,]$Gene
+PAR2_genes <- c("SPRY3","VAMP7","IL9R","WASH6P")
+PAR_genes_all <- c(PAR1_genes,PAR2_genes)
+NPX_genes <- X_genes_all[! X_genes_all %in% PAR_genes_all]
+NPY_genes <- Y_genes_all[! Y_genes_all %in% PAR_genes_all]
+autosome_genes <- geneAnno[! geneAnno$chr %in% c("chrX","chrY"),"Gene"]
+```
+
+#Bring in metadata
+```{r}
+#read in the metadata table
+metadata <-read.delim(paste0(myPath,"Linear_regressions/metadata.txt"), stringsAsFactors = FALSE)
+
+#restrict to cell type and karyotype
+metadata_lcl <- metadata[metadata$karyotype %in% c("X","XX","XXX","XXXX","XXXXY","XXXY","XXY","XXYY","XY","XYY","XYYYY") & metadata$cell_type == "LCL" & metadata$Technical_replicate == "N",]
+rownames(metadata_lcl) <- metadata_lcl$sample
+
+metadata_fib <- metadata[metadata$karyotype %in% c("X","XX","XXX","XXXX","XXXXY","XXXY","XXY","XXYY","XY","XYY","XYYYY") & metadata$cell_type == "Fib" & metadata$Technical_replicate == "N",]
+rownames(metadata_fib) <- metadata_fib$sample
+```
+
+##Processing raw RNA-seq data
+```{r, eval=FALSE}
+### The following code is used to run this analysis from the raw data. Skip below to begin with provided processed data file. ###
+## You must obtain access to the raw data through dbGaP (accession # phs002481). Download the fastq files, and run kallisto using the following command:
+# kallisto quant -i KALLISTO_INDEX_FILE -t 16 --bias --plaintext -o  /kallisto_OUTPUT_FOLDER/sampleName/ file1fastq.gz file2fastq.gz
+
+#Bring in list of Kallisto output files
+# myFileTable <- read.table(file ="all_rnaseq_files.txt", row.names = 1, stringsAsFactors = FALSE)
+# 
+# # myFileTable <- read.table(file =  "PATH TO LIST OF FILES", row.names = 1, stringsAsFactors = FALSE)
+# myFiles <- myFileTable$V2
+# names(myFiles) <- rownames(myFileTable)
+# 
+# # subset file list for the samples I will use in this analysis
+# myFiles_lcl <- myFiles[metadata_lcl$sample]
+# myFiles_fib <- myFiles[metadata_fib$sample]
+# 
+# 
+# #run tximport to bring in mapped samples
+# suppressPackageStartupMessages(library("tximport"))
+# 
+# annofile <-read.delim(file=paste0(myPath,"Annotations/annotation_with_ERCC.txt"),sep = " ")
+# tx2gene <-data.frame("TXNAME" = annofile$transcript_id,"GENEID" = annofile$gene_name)
+# 
+# txi_lcl <- tximport(myFiles_lcl, type = "kallisto", tx2gene = tx2gene)
+# save(txi_lcl, file=paste0(myPath,"Linear_regressions/LCLs/txi_lcl.rda"))
+# txi_fib <- tximport(myFiles_fib, type = "kallisto", tx2gene = tx2gene)
+# save(txi_fib, file=paste0(myPath,"Linear_regressions/Fibroblasts/txi_fib.rda"))
+
+# #Adjust so tximport only has autosomal genes
+# txi_lcl$counts <- txi_lcl$counts[rownames(txi_lcl$counts) %in% autosome_genes,]
+# txi_lcl$abundance <- txi_lcl$abundance[rownames(txi_lcl$abundance) %in% autosome_genes,]
+# txi_lcl$length <- txi_lcl$length[rownames(txi_lcl$length) %in% autosome_genes,]
+# 
+# txi_fib$counts <- txi_fib$counts[rownames(txi_fib$counts) %in% autosome_genes,]
+# txi_fib$abundance <- txi_fib$abundance[rownames(txi_fib$abundance) %in% autosome_genes,]
+# txi_fib$length <- txi_fib$length[rownames(txi_fib$length) %in% autosome_genes,]
+# 
+# 
+# #Adjust sample tables to match list of samples in txi
+# sample_table_lcl <- metadata_lcl[colnames(txi_lcl$counts), c("x_count","y_count","batch_libprep")]
+# sample_table_fib <- metadata_fib[colnames(txi_fib$counts), c("x_count","y_count","batch_libprep")]
+```
+
+#Load processed data
+```{r}
+#Load counts files from regular regression analysis
+lcl_counts <- read.delim(file=paste0(myPath,"Linear_regressions/LCLs/lcl_txi_counts.txt"), check.names = FALSE)
+fib_counts <- read.delim(file=paste0(myPath,"Linear_regressions_old/Fibroblasts/fib_txi_counts.txt"), check.names=FALSE)
+
+#Adjust so only has autosomal genes
+lcl_counts_auto <- lcl_counts[rownames(lcl_counts) %in% autosome_genes,]
+fib_counts_auto <- fib_counts[rownames(fib_counts) %in% autosome_genes,]
+
+load(file=paste0(myPath,"Linear_regressions/LCLs/lcl_expressed.rda"))
+load(file=paste0(myPath,"Linear_regressions/Fibroblasts/fib_expressed.rda"))
+```
+
+#Do linear regressions with DESEQ2
+```{r}
+### THIS CODE CHUNK TAKES A LITTLE LONGER TO RUN. RUN IT ONCE AND THEN COMMENT OUT THE CODE AND LOAD FROM THE R DATA FILES.
+#If you have the tximport files, use DESeqDataSetFromTximport()
+# dds_x_y_lcl <- DESeqDataSetFromMatrix(round(lcl_counts_auto), colData = sample_table_lcl, design = ~ batch_libprep + y_count + x_count)
+# dds_x_y_lcl <- DESeq(dds_x_y_lcl)
+# save(dds_x_y_lcl, file=paste0(myPath,"Linear_regressions/Autosomes_only_normalization/dds_x_y_lcl.rda"))
+#once you run this and save, you can save time by just loading the file using the code below:
+load(file=paste0(myPath,"Linear_regressions/Autosomes_only_normalization/dds_x_y_lcl.rda"))
+
+# dds_x_y_fib <- DESeqDataSetFromMatrix(round(fib_counts_auto), colData = sample_table_fib, design = ~ batch_libprep + y_count + x_count)
+# dds_x_y_fib <- DESeq(dds_x_y_fib)
+# save(dds_x_y_fib, file=paste0(myPath,"Linear_regressions/Autosomes_only_normalization/dds_x_y_fib.rda"))
+load(file=paste0(myPath,"Linear_regressions/Autosomes_only_normalization/dds_x_y_fib.rda"))
+
+```
+
+## lcl X Regression Results
+```{r}
+#Run results (Design ~ batch_libprep + y_count + x_count)
+lcl_x_results <- allResults(mydds = dds_x_y_lcl, myVar = "x_count", myAnno = geneAnno, expGenes = lcl_expressed, myTitle = "lcl_x_count",myalpha = 0.05, pdfWidth = 3.5, pdfHeight = 3, myYlim = c(-2,1.5))
+```
+
+## lcl Y Regression Results
+```{r}
+#Run results (Design ~ batch_libprep + y_count + x_count)
+lcl_y_results <- allResults(mydds = dds_x_y_lcl, myVar = "y_count", myAnno = geneAnno, expGenes = lcl_expressed, myTitle = "lcl_y_count",myalpha = 0.05, pdfWidth = 3.5, pdfHeight = 3, myYlim = c(-2,1.5))
+```
+## fib X Regression Results
+```{r}
+#Run results (Design ~ batch_libprep + y_count + x_count)
+fib_x_results <- allResults(mydds = dds_x_y_fib, myVar = "x_count", myAnno = geneAnno, expGenes = fib_expressed, myTitle = "fib_x_count",myalpha = 0.05, pdfWidth = 3.5, pdfHeight = 3, myYlim = c(-2,1.5))
+```
+
+## fib Y Regression Results
+```{r}
+#Run results (Design ~ batch_libprep + y_count + x_count)
+fib_y_results <- allResults(mydds = dds_x_y_fib, myVar = "y_count", myAnno = geneAnno, expGenes = fib_expressed, myTitle = "fib_y_count",myalpha = 0.05, pdfWidth = 3.5, pdfHeight = 3, myYlim = c(-2,1.5))
+```
+
+## Put together all the results for supplemental table
+```{r}
+#Merge results and select only gene_name.107 to work with!
+lcl_auto_results <- merge(x = lcl_x_results$res_anno_exp_auto[,c(2:7,14)], y = lcl_y_results$res_anno_exp_auto[,c(2:7,14)], by="gene_name.107", all = TRUE)
+rownames(lcl_auto_results) <- lcl_auto_results$Gene
+#rearrange so "Gene" now refers to ensembl 107 names.
+lcl_auto_results_mod <- lcl_auto_results[,c("gene_name.107","baseMean.x","log2FoldChange.x","lfcSE.x",
+                                        "stat.x","pvalue.x","padj.x","log2FoldChange.y",
+                                        "lfcSE.y","stat.y","pvalue.y","padj.y")]
+colnames(lcl_auto_results_mod) <- c("Gene","lcl_baseMean","lcl_log2FC_X","lcl_lfcSE_X",
+                                        "lcl_stat_X","lcl_pvalue_X","lcl_padj_X","lcl_log2FC_Y",
+                                        "lcl_lfcSE_Y","lcl_stat_Y","lcl_pvalue_Y","lcl_padj_Y")
+
+fib_auto_results <- merge(x=fib_x_results$res_anno_exp_auto[,c(2:7,14)], y=fib_y_results$res_anno_exp_auto[,c(2:7,14)], by="gene_name.107", all=TRUE)
+rownames(fib_auto_results) <- fib_auto_results$Gene
+#rearrange so "Gene" now refers to ensembl 107 names.
+fib_auto_results_mod <- fib_auto_results[,c("gene_name.107","baseMean.x","log2FoldChange.x","lfcSE.x",
+                                        "stat.x","pvalue.x","padj.x","log2FoldChange.y",
+                                        "lfcSE.y","stat.y","pvalue.y","padj.y")]
+colnames(fib_auto_results_mod) <- c("Gene","fib_baseMean","fib_log2FC_X","fib_lfcSE_X",
+                                        "fib_stat_X","fib_pvalue_X","fib_padj_X","fib_log2FC_Y",
+                                        "fib_lfcSE_Y","fib_stat_Y","fib_pvalue_Y","fib_padj_Y")
+
+lcl_fib_auto_results <- merge(x=lcl_auto_results_mod, y=fib_auto_results_mod, by="Gene", all=TRUE)
+lcl_fib_auto_results_anno <- merge(x=lcl_fib_auto_results, y=geneAnno[,c("gene_name.107","chr","start","stop","gene_id.107","gene_type.107","Gene","gene_id.84","gene_type.84")], all.x=TRUE, by.x="Gene",by.y="gene_name.107")
+
+
+write.table(x = lcl_fib_auto_results_anno, file="lcl_fib_XandY_results_auto_expressed.txt", quote=FALSE, row.names = FALSE, col.names = TRUE, sep="\t")
+
+#list of fib exp autosomal genes
+write.table(fib_x_results$res_anno_exp_auto$Gene, file="fib_exp_auto_genes.txt", col.names=FALSE, row.names=FALSE, quote=FALSE, sep="\t")
+write.table(lcl_x_results$res_anno_exp_auto$Gene, file="lcl_exp_auto_genes.txt", col.names=FALSE, row.names=FALSE, quote=FALSE, sep="\t")
+```
+
+
+
+# Comparing regular analysis with these results
+```{r}
+#First get autosomal genes expressed in BOTH LCLs and fibroblasts
+reg_analysis <- read.delim(file=paste0(myPath,"Linear_regressions/lcl_fib_XandY_results_auto_expressed.txt"), stringsAsFactors = TRUE)
+
+#Merge new analysis with old analysis
+old_new_merge <- merge(x=reg_analysis, y=lcl_fib_auto_results_anno, by="Gene", all=TRUE)
+
+#Venn diagram
+#X-responsive gene overlap, LCL
+twoGroupVenn_geneNames(setA = lcl_fib_auto_results_anno[lcl_fib_auto_results_anno$lcl_padj_X < 0.05, "Gene"], setAname = "Autosomes_only", setB = reg_analysis[reg_analysis$lcl_padj_X<0.05,"Gene"], setBname = "All_gene_analysis", expGenes = lcl_expressed$expAutoGenes, filename = "LCL_X_response_autosomeOnly_vs_regAnalysis.pdf")
+#X-responsive gene overlap, Fib
+twoGroupVenn_geneNames(setA = lcl_fib_auto_results_anno[lcl_fib_auto_results_anno$fib_padj_X < 0.05, "Gene"], setAname = "Autosomes_only", setB = reg_analysis[reg_analysis$fib_padj_X<0.05,"Gene"], setBname = "All_gene_analysis", expGenes = fib_expressed$expAutoGenes, filename = "Fib_X_response_autosomeOnly_vs_regAnalysis.pdf")
+
+#Y-responsive gene overlap, LCL
+twoGroupVenn_geneNames(setA = lcl_fib_auto_results_anno[lcl_fib_auto_results_anno$lcl_padj_Y < 0.05, "Gene"], setAname = "Autosomes_only", setB = reg_analysis[reg_analysis$lcl_padj_Y<0.05,"Gene"], setBname = "All_gene_analysis", expGenes = lcl_expressed$expAutoGenes, filename = "LCL_Y_response_autosomeOnly_vs_regAnalysis.pdf")
+#X-responsive gene overlap, Fib
+twoGroupVenn_geneNames(setA = lcl_fib_auto_results_anno[lcl_fib_auto_results_anno$fib_padj_Y < 0.05, "Gene"], setAname = "Autosomes_only", setB = reg_analysis[reg_analysis$fib_padj_Y<0.05,"Gene"], setBname = "All_gene_analysis", expGenes = fib_expressed$expAutoGenes, filename = "Fib_Y_response_autosomeOnly_vs_regAnalysis.pdf")
+```
+
