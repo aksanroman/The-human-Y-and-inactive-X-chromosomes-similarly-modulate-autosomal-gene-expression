@@ -8,7 +8,6 @@ output: html_notebook
 myPath <-  #ADD PATH TO GITHUB FOLDER
 #load DESeq2 library
 suppressPackageStartupMessages(library("DESeq2"))
-# library("ggpubr")
 
 #Bring in functions!
 source(file=paste0(myPath,"Scripts/Function_ASR-QQmanhattan_20221103.R"))
@@ -122,6 +121,7 @@ load(file=paste0(myPath,"Linear_regressions/Fibroblasts/fib_expressed.rda"))
 #Do linear regressions with DESEQ2
 ```{r}
 ### THIS CODE CHUNK TAKES A LITTLE LONGER TO RUN. RUN IT ONCE AND THEN COMMENT OUT THE CODE AND LOAD FROM THE R DATA FILES.
+#If you can generate the tximport files, use DESeqDataSetFromTximport()
 dds_x_y_lcl <- DESeqDataSetFromMatrix(round(lcl_counts), colData = sample_table_lcl, design = ~ batch_libprep + y_count + x_count)
 dds_x_y_lcl <- DESeq(dds_x_y_lcl, parallel = TRUE)
 save(dds_x_y_lcl, file=paste0(myPath,"Linear_regressions/LCLs/dds_x_y_lcl.rda"))
