@@ -13,6 +13,7 @@ suppressPackageStartupMessages(library("DESeq2"))
 source(file=paste0(myPath,"Scripts/Function_ASR-QQmanhattan_20221103.R"))
 source(file=paste0(myPath,"Scripts/Function_DESeqManhattan_noM_col_auto_20221103.R"))
 source(file=paste0(myPath,"Scripts/Function_allResults_20221103.R"))
+source(file=paste0(myPath,"Scripts/Function_makeSymmetric_X_Y_20221103.R"))
 source(file=paste0(myPath,"Scripts/Function_paper2_corrPlot_deming_20230419.R"))
 
 #Set up sex chromosome gene lists, using gencode v84 as "Gene" list
