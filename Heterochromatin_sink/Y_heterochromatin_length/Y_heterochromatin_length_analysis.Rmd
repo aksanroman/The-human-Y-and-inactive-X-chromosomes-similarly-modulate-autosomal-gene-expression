@@ -1,0 +1,284 @@
+---
+title: "Analysis of polymorphisms in Y heterochromatin length and impact on gene expression"
+output: html_notebook
+---
+
+#Setup
+```{r}
+myPath <- #PATH TO GITHUB FOLDER
+
+suppressPackageStartupMessages(library("ggplot2"))
+suppressPackageStartupMessages(library("DESeq2"))
+
+source(file=paste0(myPath,"Scripts/Function_ASR-QQmanhattan_20221103.R"))
+source(file=paste0(myPath,"Scripts/Function_DESeqManhattan_noM_col_auto_20221103.R"))
+source(file=paste0(myPath,"Scripts/Function_allResults_20221103.R"))
+
+
+#Set up sex chromosome gene lists, using gencode v84 as "Gene" list
+geneAnno <- na.omit(read.delim(file=paste0(myPath,"Annotations/geneAnno_proteinCoding_lncRNA_v107_20230426.txt"), stringsAsFactors = FALSE))
+#Main "Gene" name will be ensembl84
+colnames(geneAnno)[c(2,4:6)] <- c("Gene","chr","start","stop")
+#Only include genes in both v84 and v107
+geneAnno <- geneAnno[! is.na(geneAnno$Gene),]
+geneAnno <- geneAnno[! duplicated(geneAnno$gene_name.107) & ! geneAnno$gene_name.107 %in% c("") & ! duplicated(geneAnno$Gene),]
+geneAnno_x <- geneAnno[geneAnno$chr == "chrX",]
+geneAnno_y <- geneAnno[geneAnno$chr == "chrY",]
+X_genes_all <-as.character(geneAnno_x$Gene)
+Y_genes_all <-as.character(geneAnno_y$Gene)
+sexChrom_genes <- c(X_genes_all,Y_genes_all)
+PAR1_genes <- geneAnno_x[geneAnno_x$start < 2691188,]$Gene
+PAR2_genes <- c("SPRY3","VAMP7","IL9R","WASH6P")
+PAR_genes_all <- c(PAR1_genes,PAR2_genes)
+NPX_genes <- X_genes_all[! X_genes_all %in% PAR_genes_all]
+NPY_genes <- Y_genes_all[! Y_genes_all %in% PAR_genes_all]
+autosome_genes <- geneAnno[! geneAnno$chr %in% c("chrX","chrY"),"Gene"]
+
+NPX_ypairs = c("SOX3", "ZFX", "DDX3X", "KDM6A","KDM5C","USP9X","EIF1AX","RPS4X","AMELX","TXLNG","TMSB4X","NLGN4X","TBL1X","PRKX")
+NPY_xpairs = c("SRY", "ZFY", "DDX3Y", "UTY","KDM5D","USP9Y","EIF1AY","RPS4Y1","RPS4Y2", "AMELY","TXLNGY","TMSB4Y","NLGN4Y","TBL1Y","PRKY")
+
+# allResults <- function(mydds,myVar,myAnno,expGenes,myalpha = 0.05, myTitle, 
+#                        myYlim = c(-1,1), pdfWidth = 10,pdfHeight=7) {
+#   #A function to get all of the results from DESeq2 output.
+#   #mydds <- deseq object (name of dds object)
+#   #myVar <- which variable you want to get the results for (character)
+#   #myAnno <- data file for the annotated genes (geneAnno)
+#   #myalpha <- adjusted p-value cutoff (numeric)
+#   #myTitle <- what you want the filenames to start with for the output results (Character)
+#   
+#   # mydds <- dds_geuvadis_male
+#   # myVar <- "DYZ1_depth_log"
+#   # myAnno <- geneAnno
+#   # expGenes <- lcl_expressed
+#   # myalpha = 0.05
+#   # myTitle = "DYZ1_depth"
+#   # pdfWidth = 10
+#   # pdfHeight = 5
+#   # myYlim = c(-1.5,1.5)
+#   
+#   #get results in my annotation
+#   res <- results(mydds, name = myVar, alpha = myalpha)
+#   res <- res[rownames(res) %in% myAnno$Gene, ]
+#   res_exp <- res[rownames(res) %in% expGenes$expressedGenes, ]
+#   res_exp_ordered <- res_exp[order(res_exp$padj), ]
+#   
+#   #associate with annotation and write out the expressed genes
+#   res_anno_exp <- merge(x=as.data.frame(res_exp_ordered), y=geneAnno, by.x=0, by.y="Gene")
+#   rownames(res_anno_exp) <- res_anno_exp$Row.names
+#   colnames(res_anno_exp)[1] <- "Gene"
+#   # write.table(res_anno_exp, file = paste0(myTitle, "_expressed.txt"), quote = FALSE, sep = "\t")
+#   
+#   res_anno_exp_auto <- res_anno_exp[rownames(res_anno_exp) %in% expGenes$expAutoGenes,]
+#   write.table(res_anno_exp_auto, file = paste0(myTitle, "_auto_expressed.txt"), quote = FALSE, sep = "\t", row.names = FALSE, col.names = TRUE)
+# 
+#   #write out significant list
+#   res_anno_exp_sig <- na.omit(res_anno_exp[res_anno_exp$padj < myalpha, ])
+# 
+#   res_anno_exp_sig_auto <- res_anno_exp_sig[rownames(res_anno_exp_sig) %in% expGenes$expAutoGenes,]
+#   # write.table(res_anno_exp_sig_auto, file = paste0(myTitle, "_p_", as.character(myalpha), "_auto.txt"),quote = FALSE,sep = "\t")
+#   
+#   #write out autosomal significant genes list
+#   res_anno_exp_sig_auto <-na.omit(res_anno_exp_sig[!res_anno_exp_sig$chr %in% c("chrX", "chrY"), ])
+#   write.table(rownames(res_anno_exp_sig_auto),file = paste0(myTitle,"_p_", as.character(myalpha),"_auto_genes.txt"),
+#               quote = FALSE,sep = "\t",row.names = FALSE,col.names = FALSE)
+#   
+#   myRowNames <- c("All_genes", "Auto_genes")
+#   sigGenes <- dim(res_anno_exp_sig)[1]
+#   sigGenes_up <- dim(res_anno_exp_sig[res_anno_exp_sig$log2FoldChange > 0,])[1]
+#   sigGenes_down <- dim(res_anno_exp_sig[res_anno_exp_sig$log2FoldChange < 0,])[1]
+#   sig_autoGenes <- dim(res_anno_exp_sig_auto)[1]
+#   sig_autoGenes_up <- dim(res_anno_exp_sig_auto[res_anno_exp_sig_auto$log2FoldChange > 0,])[1]
+#   sig_autoGenes_down <- dim(res_anno_exp_sig_auto[res_anno_exp_sig_auto$log2FoldChange < 0,])[1]
+#  
+#   allGenes <- c(sigGenes, sig_autoGenes)
+#   upGenes <- c(sigGenes_up, sig_autoGenes_up)
+#   downGenes <- c(sigGenes_down, sig_autoGenes_down)
+#   myExpGenes <- c(length(expGenes$expressedGenes), length(expGenes$expAutoGenes))
+#   
+#   results_table <- data.frame("Sig_genes" = allGenes, "Up" = upGenes, "Down" = downGenes, "Expressed" = myExpGenes)
+#   row.names(results_table) <- myRowNames
+#   
+#   print(results_table)
+#   percentGenes <- 100 * ( sigGenes / length(expGenes$expressedGenes ))
+#   print(paste0("% of responsive expressed genes = ", format( round(percentGenes,2), nsmall = 2)))
+#   
+#   print("Top 50 significant autosome genes (by p-val):")
+#   sig_auto <- res_anno_exp_sig_auto[order(res_anno_exp_sig_auto$padj, decreasing = FALSE),]
+#   sig_auto50 <- sig_auto[1:50,]
+#   sig_auto50$padj <- format(sig_auto50$padj, scientific=TRUE)
+#   sig_auto50$log2FoldChange <- round(sig_auto50$log2FoldChange, 3)
+#   print(sig_auto50[,c("log2FoldChange", "padj","chr")])
+#   
+#     DESeqManhattan_noM_col_auto(res_anno_exp_auto, mySigGenes = res_anno_exp_sig_auto,
+#                                 myTitle=myTitle,fileName=paste0(myTitle,"_p_",as.character(myalpha),"_manhattan_auto_noYlim.pdf"),
+#                                  pointsize = 0.35,axissize = 0.5, labelsize = 0.5, ylabel = paste0("Log2 fold-change per ",myVar), pdfWidth = pdfWidth, 
+#                                 pdfHeight = pdfHeight)
+#     DESeqManhattan_noM_col_auto(res_anno_exp_auto, mySigGenes = res_anno_exp_sig_auto,
+#                                 myTitle=myTitle,fileName=paste0(myTitle,"_p_",as.character(myalpha),"_manhattan_auto_Ylim.pdf"),
+#                                 pointsize = 0.35,axissize = 0.5, labelsize = 0.5, ylabel = paste0("Log2 fold-change per ",myVar), myYlim = myYlim,pdfWidth = pdfWidth, 
+#                                 pdfHeight = pdfHeight)
+# 
+#   normalized_counts <- counts(mydds,normalized=TRUE)
+#   write.table(normalized_counts,file = paste0(myTitle,"_normcounts.txt"),
+#               quote = FALSE,sep = "\t",row.names = TRUE,col.names = TRUE)
+#   
+#   log_norm_counts <- log2(counts(mydds,normalized=TRUE)+1)
+#   
+#   myList <- list("res_anno_exp" = res_anno_exp, "res_anno_exp_auto" = res_anno_exp_auto, "res_anno_exp_sig" = res_anno_exp_sig,
+#                  "res_anno_exp_sig_auto" = res_anno_exp_sig_auto, "norm_counts" = 
+#                    normalized_counts, "log_norm_counts" = log_norm_counts)
+#   return(myList)
+# }
+# 
+# #Function to make modified manhattan plots across autosomes
+# suppressPackageStartupMessages(library(qqman))
+# source(file=paste0(myPath,"Linear_regressions/ASR-QQmanhattan.R"))
+# DESeqManhattan_noM_col_auto <- function(myAnnoData, mySigGenes=NULL, myTitle="Manhattan Plot", fileName="manhattan.pdf",myYlim=NULL,pngSize = c(5,5), pointsize=1,axissize = 1, labelsize=1,ylabel="Slope of regression (log2)", pdfWidth=7, pdfHeight=5){
+#   
+#   #replace PAR chromosomes
+#   my.chrom <- as.character(myAnnoData$chr)
+#   
+#   #convert chromosomes to numbers, remove M, remove X, remove Y
+#   chromosomes = c(1:22)
+#   for(myChr in chromosomes){
+#     my.chrom <- replace(my.chrom, my.chrom==paste0("chr",as.character(myChr)), myChr)
+#   }
+# 
+#   #get the dataframe ready
+#   my.df <- data.frame(rownames(myAnnoData),as.numeric(my.chrom),myAnnoData$start, myAnnoData$padj, myAnnoData$log2FoldChange)
+#   colnames(my.df) <- c("SNP","CHR", "BP","P","log2FC")
+#   my.df <- na.omit(my.df)
+#   my.df <- my.df[! my.df$CHR %in% c("chrM","chrX","chrY"),]
+#   
+#   #make the manhattan plot
+#   pdf(file=fileName, width=pdfWidth, height=pdfHeight)
+#   
+#   if(is.null(mySigGenes)){
+#     ASRQQmanhattan(my.df, p="log2FC", logp=FALSE, ylab=ylabel,main=myTitle, cex=pointsize,
+#                    cex.axis=axissize, col=c("#99999920", "#99999920"), chrlabs=as.character(c(1:22)), cex.lab=labelsize, 
+#                    myLim = myYlim)
+#   } else{
+#     
+#     #highlight significant genes
+#     sig_genes <- rownames(mySigGenes)
+#     ASRQQmanhattan(my.df, p="log2FC", logp=FALSE, ylab=ylabel,main=myTitle, cex=pointsize,
+#                    cex.axis=axissize, col=c("#99999920", "#99999920"), colhighlight=c("#0072B290","#D55E0090"),
+#                    chrlabs=as.character(c(1:22)), highlight = sig_genes, cex.lab=labelsize, myLim=myYlim)
+#   }
+#   dev.off()
+# }
+```
+
+#Plot DYZ1 lengths
+```{r}
+dyz1_depth <- read.delim(file=paste0(myPath,"Heterochromatin_sink/Y_heterochromatin_length/1225_subjects_DYZ1_depth_summed.txt"), stringsAsFactors = FALSE, header=TRUE)
+
+summary(dyz1_depth$DYZ1_norm_coverage)
+
+pdf(file="DYZ1_depth_histogram.pdf", width = 2.3, height=1.75)
+ggplot(data = dyz1_depth, mapping = aes(x=DYZ1_norm_coverage)) +
+  geom_histogram(binwidth = 20, color="black", fill="grey", size=0.25) +
+  theme_classic(base_size=8) +
+  theme(
+      axis.text = element_text(color = "black"), 
+      axis.ticks = element_line(color = "black", size = 0.25), 
+      axis.line = element_line(size = 0.25),
+      ) + xlim(0,800)
+dev.off()
+```
+
+#1000 genomes samples with RNAseq data
+```{r}
+#read in metadata table
+geuvadis_metadata <- read.delim(file=paste0(myPath,"Heterochromatin_sink/Y_heterochromatin_length/geuvadis_metadata_all.txt"))
+rownames(geuvadis_metadata) <- geuvadis_metadata$sample
+geuvadis_metadata <- geuvadis_metadata[2:5]
+geuvadis_metadata_male <- geuvadis_metadata[geuvadis_metadata$sex == "male",]
+
+s2_meta <- read.delim(file=paste0(myPath,"Heterochromatin_sink/Y_heterochromatin_length/nbt.2702-S2.txt"))[,c(1:15)]
+s2_meta_rmdup <- s2_meta[s2_meta$UseThisDuplicate == 1, ]
+rownames(s2_meta_rmdup) <- s2_meta_rmdup$Sample_ID
+
+#Merge metadata tables
+geuvadis_metadata_male_merged <- merge(x=geuvadis_metadata_male, y=s2_meta_rmdup[,c(2,4,13,15)],by.x="sample",by.y="Sample_ID",all.x=TRUE)
+
+#some metadata has low RIN numbers; exclude those
+summary(geuvadis_metadata_male_merged$RIN)
+geuvadis_metadata_male_merged_goodRIN <- geuvadis_metadata_male_merged[geuvadis_metadata_male_merged$RIN >= 8,]
+
+#according to the 't Hoen nature biotech paper the following are outlier samples or incorrectly annotated so I will also remove them: NA12546.1, HG00329.5,NA18861.4, NA19144.4, NA19225.6, HG00237.4, NA12399.7, NA07000.1
+outlierSamples <- c("HG00329", "NA18861","NA19144", "NA19225","HG00237", "NA12399", "NA07000")
+
+metadata_male_goodRIN_rmOut <- geuvadis_metadata_male_merged_goodRIN[! geuvadis_metadata_male_merged_goodRIN$sample %in% outlierSamples,] #204 samples
+
+#Which samples have DYZ1?
+sample_table_male <- merge(x=metadata_male_goodRIN_rmOut, y=dyz1_depth, by.x="sample", by.y="subjectID") #194 samples!
+sample_table_male$DYZ1_depth_log <- log2(sample_table_male$DYZ1_norm_coverage)
+
+write.table(sample_table_male, file="geuvadis_male_metadata.txt", quote=FALSE, sep="\t")
+
+dyz1_depth$have_RNA_seq <- FALSE
+dyz1_depth[dyz1_depth$subjectID %in% sample_table_male$sample, "have_RNA_seq"] <- TRUE
+write.table(dyz1_depth, file=paste0(myPath,"Heterochromatin_sink/Y_heterochromatin_length/table_s6a.txt"), quote=FALSE, sep="\t", col.names = TRUE, row.names = FALSE)
+
+#Plot DYZ1 in RNA-seq samples subset.
+pdf(file="DYZ1_depth_histogram_194samples.pdf", width = 2.3, height=1.75)
+ggplot(data = sample_table_male, mapping = aes(x=DYZ1_norm_coverage)) +
+  geom_histogram(binwidth = 20, color="black", fill="grey", size=0.25) +
+  theme_classic(base_size=8) +
+  theme(
+      axis.text = element_text(color = "black"), 
+      axis.ticks = element_line(color = "black", size = 0.25), 
+      axis.line = element_line(size = 0.25),
+      ) + xlim(0,800)
+dev.off()
+
+summary(sample_table_male$DYZ1_norm_coverage)
+```
+
+#DESeq analysis of RNA-seq data from raw data
+```{r, eval=FALSE}
+library(tximport)
+# fileNames <- #PATH TO RAW RNASEQ FILES FROM GEUVADIS
+# names(fileNames) <- sample_table_male$sample
+# annofile <-read.delim(file=paste0(myPath,"Annotations/annotation_with_ERCC.txt"),sep = " ")
+# tx2gene <- data.frame("TXNAME"=annofile$transcript_id, "GENEID"=annofile$gene_name)
+# 
+# txi.geuvadis.male <- tximport(fileNames, type = "kallisto", tx2gene = tx2gene)
+# save(txi.geuvadis.male, file=paste0(myPath,"Heterochromatin_sink/Y_heterochromatin_length/tximport_geuvadis_male.rda"))
+
+load(file=paste0(myPath,"Heterochromatin_sink_old/Y_heterochromatin_length/tximport_geuvadis_male.rda"))
+write.table(x=txi.geuvadis.male$counts, file="txi.geuvadis.male_counts.txt", sep="\t", quote=FALSE, row.names = TRUE, col.names = TRUE)
+write.table(x=txi.geuvadis.male$abundance, file="txi.geuvadis.male_TPM.txt", sep="\t", quote=FALSE, row.names = TRUE, col.names = TRUE)
+```
+
+#Results of DYZ1 gene expn analysis with processed data
+```{r}
+lcl_counts <- read.delim(file=paste0(myPath,"Heterochromatin_sink/Y_heterochromatin_length/txi.geuvadis.male_counts.txt"), check.names = FALSE)
+
+#Bring in expressed lcl genes
+load(file=paste0(myPath,"Linear_regressions/LCLs/lcl_expressed.rda"))
+
+#DESeq2 with DYZ1 depth
+#If you have the tximport files, use DESeqDataSetFromTximport()
+dds_geuvadis_male <- DESeqDataSetFromMatrix(round(lcl_counts), colData = sample_table_male, design= ~ DYZ1_depth_log + population + SeqLabNumber)
+dds_geuvadis_male <- DESeq(dds_geuvadis_male)
+save(dds_geuvadis_male, file=paste0(myPath,"Heterochromatin_sink/Y_heterochromatin_length/deseq_geuvadis_male.rda"))
+# load(file=paste0(myPath,"Heterochromatin_sink/Y_heterochromatin_length/deseq_geuvadis_male.rda"))
+
+
+DYZ1_results <- allResults(mydds = dds_geuvadis_male, myVar = "DYZ1_depth_log", myAnno = geneAnno, expGenes = lcl_expressed, myTitle = "DYZ1_depth",myalpha = 0.05, pdfWidth = 3.5, pdfHeight = 3, myYlim = c(-2,1.5))
+
+#Volcano plot
+pdf(file="DYZ1_volcano_plot.pdf", height=1.7, width=2.3)
+ggplot(data=DYZ1_results$res_anno_exp_auto,mapping = aes(x=log2FoldChange, y=-log10(padj))) +
+  geom_point(color="#00000080", stroke=0) +
+  geom_hline(yintercept = -log10(0.05), lty=2, size=0.25) +
+  theme_classic(base_size = 8) +
+  theme(
+      axis.text = element_text(color = "black"), 
+      axis.ticks = element_line(color = "black", size = 0.25), 
+      axis.line = element_line(size = 0.25),
+      )
+dev.off()
+```
