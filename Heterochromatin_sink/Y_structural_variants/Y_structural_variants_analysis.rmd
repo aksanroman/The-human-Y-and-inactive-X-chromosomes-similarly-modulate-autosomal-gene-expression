@@ -87,7 +87,7 @@ load(file=paste0(myPath,"Linear_regressions/LCLs/lcl_expressed.rda"))
 ```{r}
 ### THIS CODE CHUNK TAKES A LITTLE LONGER TO RUN. RUN IT ONCE AND THEN COMMENT OUT THE CODE AND LOAD FROM THE R DATA FILES.
 #If you have the tximport files, use DESeqDataSetFromTximport()
-# dds_strucvar_y_lcl <- DDESeqDataSetFromMatrix(round(lcl_strucvar_y_counts), colData = sample_table_lcl, design = ~ batch_libprep + karyotype)
+# dds_strucvar_y_lcl <- DESeqDataSetFromMatrix(round(lcl_strucvar_y_counts), colData = sample_table_lcl, design = ~ batch_libprep + karyotype)
 # dds_strucvar_y_lcl <- DESeq(dds_strucvar_y_lcl)
 # save(dds_strucvar_y_lcl, file=paste0(myPath,"Heterochromatin_sink/Y_structural_variants/dds_strucvar_y_lcl_v2.rda"))
 
