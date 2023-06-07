@@ -1,3 +1,9 @@
+suppressPackageStartupMessages(library(dplyr))
+associateWrite <- function(myOrderedFile){
+  myOrderedFile_df <- as.data.frame(myOrderedFile)
+  myOrderedFile_anno <- cbind(myOrderedFile_df, geneAnno[match(rownames(myOrderedFile_df), geneAnno$Gene),])
+}
+
 deseqFactorAnalysis <- function(deseqObject, myVariable, comparisonList, expressedGeneList, p_value=0.05, myTitle="title"){
   for (i in 1:dim(comparisonList)[1]){
     print(paste("Data for the ",comparisonList[i,1]," vs ",comparisonList[i,2]," comparison."))
@@ -28,6 +34,8 @@ deseqFactorAnalysis <- function(deseqObject, myVariable, comparisonList, express
     # dev.off()
     # 
     print("Annotate files")
+    
+    
     #annotate and write out files
     comparison_exp_anno <- associateWrite(comparison_exp_ordered)
     write.table(comparison_exp_anno, file=paste(myTitle,"_",comparisonList[i,1],"vs",comparisonList[i,2],"_DESeq_expressed.txt",sep=""),quote=FALSE,sep="\t")
