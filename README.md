@@ -1,7 +1,7 @@
 # README
 This repository contains code necessary to recreate analyses in: 
 
-*Add paper citation*
+San Roman, A.K., Skaletsky, H., Godfrey, A.K., Bokil, N.V., Teitz, L., Singh, I., Blanton, L.V., Bellott, D.W., Pyntikova, T., Lange, J., Koutseva, N., Hughes, J.F., Brown, L., Phou, S., Buscetta, A., Kruszka, P., Banks, N., Dutra, A., Pak, E., Lasutschinkow, P.C., Keen, C., Davis, S.M., Lin, A.E., Tartaglia, N.R., Samango-Sprouse, C., Muenke, M., and Page, D.C. (2023) The human Y and inactive X chromosomes similarly modulate autosomal gene expression. bioRxiv _____ 
 
 Each folder contains code and processed data that may be used to recreate one or more figures and tables:  
 
