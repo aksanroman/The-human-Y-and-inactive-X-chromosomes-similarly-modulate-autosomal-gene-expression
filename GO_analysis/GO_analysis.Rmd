@@ -1,0 +1,194 @@
+---
+title: "GO Analysis"
+output: html_notebook
+---
+#Setup and functions
+```{r}
+myPath <-  #ADD PATH TO GITHUB FOLDER
+#Set up sex chromosome gene lists, using gencode v84 as "Gene" list
+geneAnno <- na.omit(read.delim(file=paste0(myPath,"Annotations/geneAnno_proteinCoding_lncRNA_v107_20230426.txt"), stringsAsFactors = FALSE))
+#Main "Gene" name will be ensembl84
+colnames(geneAnno)[c(2,4:6)] <- c("Gene","chr","start","stop")
+#Only include genes in both v84 and v107
+geneAnno <- geneAnno[! is.na(geneAnno$Gene),]
+geneAnno <- geneAnno[! duplicated(geneAnno$gene_name.107) & ! geneAnno$gene_name.107 %in% c("") & ! duplicated(geneAnno$Gene),]
+geneAnno_x <- geneAnno[geneAnno$chr == "chrX",]
+geneAnno_y <- geneAnno[geneAnno$chr == "chrY",]
+X_genes_all <-as.character(geneAnno_x$Gene)
+Y_genes_all <-as.character(geneAnno_y$Gene)
+sexChrom_genes <- c(X_genes_all,Y_genes_all)
+PAR1_genes <- geneAnno_x[geneAnno_x$start < 2691188,]$Gene
+PAR2_genes <- c("SPRY3","VAMP7","IL9R","WASH6P")
+PAR_genes_all <- c(PAR1_genes,PAR2_genes)
+NPX_genes <- X_genes_all[! X_genes_all %in% PAR_genes_all]
+NPY_genes <- Y_genes_all[! Y_genes_all %in% PAR_genes_all]
+autosome_genes <- geneAnno[! geneAnno$chr %in% c("chrX","chrY"),"Gene"]
+
+library(fgsea)
+#DOWNLOAD msigDB files! 
+msigDB_files <- c("c5.go.bp.v2022.1.Hs.symbols.gmt")
+
+names(msigDB_files) <- c("goBP")
+
+GO_enrichment <- function(testGenes, backgroundGenes, gene_sets, fileName = "GO_results"){
+  
+  results_list <- list()
+  
+  for(myList in gene_sets){
+    geneSet_file <- msigDB_files[myList]
+    
+    #bring in geneSetList
+    myGeneSets <- gmtPathways(geneSet_file)
+    
+    #remove duplicates
+    myGeneSets <- myGeneSets[! duplicated(names(myGeneSets))]
+    names_myGeneSets <- names(myGeneSets)
+    
+    results_table <- data.frame("GeneSet" = names_myGeneSets,"genes_in_set" = numeric(length = length(names_myGeneSets)), "enrichment" = numeric(length = length(names_myGeneSets)),  "pval" = numeric(length = length(names_myGeneSets)), row.names = names_myGeneSets)
+    
+    #for each gene set, calculate enrichment of test genes vs background
+    for(mySet in names_myGeneSets){
+      setGenes <- myGeneSets[[mySet]]
+      test_in_set <- length(intersect(testGenes, setGenes))
+      test_not_in_set <- length(setdiff(testGenes,setGenes))
+      bg_in_set <- length(intersect(backgroundGenes,setGenes))
+      bg_not_in_set <- length(setdiff(backgroundGenes,setGenes))
+      
+      dat <- data.frame(
+        "in_set" = c(test_in_set, bg_in_set),
+        "not_in_set" = c(test_not_in_set, bg_not_in_set),
+        row.names = c("Test", "Background"),
+        stringsAsFactors = FALSE
+      )
+      colnames(dat) <- c("in_set", "in_set")
+      
+      myFisher_res <- fisher.test(dat, alternative = "greater")
+      
+      myEnrichment <-(test_in_set/test_not_in_set) / (bg_in_set/bg_not_in_set)
+      
+      results_table[mySet,c(2:4)] <- c(length(setGenes), myEnrichment, myFisher_res$p.value)
+    }
+    
+    results_table$padj <- p.adjust(p=results_table$pval, method="BH")
+    
+    write.table(x=results_table, file=paste0(fileName,"_",myList,"_GOresults.txt"), sep="\t", row.names = TRUE, col.names = TRUE)
+    
+    results_list[[myList]] <- results_table
+  }
+  return(results_list)
+}
+
+```
+
+#Analysis of sex chromosome aneuploidy
+```{r}
+#Bring in data
+lcl_x_res_exp <- na.omit(read.delim(file=paste0(myPath,"Linear_regressions/LCLs/lcl_x_count_auto_expressed.txt"), stringsAsFactors = FALSE))
+rownames(lcl_x_res_exp) <- lcl_x_res_exp$gene_name.107
+
+lcl_y_res_exp <- na.omit(read.delim(file=paste0(myPath,"Linear_regressions/LCLs/lcl_y_count_auto_expressed.txt"), stringsAsFactors = FALSE))
+rownames(lcl_y_res_exp) <- lcl_y_res_exp$gene_name.107
+
+fib_x_res_exp <- na.omit(read.delim(file=paste0(myPath,"Linear_regressions/Fibroblasts/fib_x_count_auto_expressed.txt"), stringsAsFactors = FALSE))
+rownames(fib_x_res_exp) <- fib_x_res_exp$gene_name.107
+
+fib_y_res_exp <- na.omit(read.delim(file=paste0(myPath,"Linear_regressions/Fibroblasts/fib_y_count_auto_expressed.txt"), stringsAsFactors = FALSE))
+rownames(fib_y_res_exp) <- fib_y_res_exp$gene_name.107
+
+#Run GO analysis
+lcl_x_GO <- GO_enrichment(testGenes = lcl_x_res_exp[lcl_x_res_exp$padj < 0.05,"gene_name.107"], backgroundGenes = lcl_x_res_exp$gene_name.107, gene_sets =  c("goBP"), fileName = "lcl_x_sig")
+
+lcl_y_GO <- GO_enrichment(testGenes = lcl_y_res_exp[lcl_y_res_exp$padj < 0.05,"gene_name.107"], backgroundGenes = lcl_y_res_exp$gene_name.107, gene_sets =  c("goBP"), fileName = "lcl_y_sig")
+
+fib_x_GO <- GO_enrichment(testGenes = fib_x_res_exp[fib_x_res_exp$padj < 0.05,"gene_name.107"], backgroundGenes = fib_x_res_exp$gene_name.107, gene_sets =  c("goBP"), fileName = "fib_x_sig")
+
+fib_y_GO <- GO_enrichment(testGenes = fib_y_res_exp[fib_y_res_exp$padj < 0.05,"gene_name.107"], backgroundGenes = fib_y_res_exp$gene_name.107, gene_sets =  c("goBP"), fileName = "fib_y_sig")
+
+#Make plots
+library(reshape2)
+library(ggplot2)
+
+lcl_x_ordered <- lcl_x_GO$goBP[order(lcl_x_GO$goBP$pval, decreasing=FALSE),][c(1:10),]
+lcl_x_ordered$GeneSet <- factor(lcl_x_ordered$GeneSet, levels = lcl_x_ordered$GeneSet)
+pdf(file="LCL_x_sig.pdf", height=2, width=7)
+ggplot(data = lcl_x_ordered, aes(y = GeneSet , x = enrichment, fill=-log10(pval))) + 
+  geom_bar(stat = "identity") +
+  theme_classic(base_size=8) + theme(axis.line = element_line(size = 0.25,
+    linetype = "solid"), axis.ticks = element_line(colour = "black",
+    size = 0.25), axis.text = element_text(colour = "black")) +labs(x = "Enrichment", y = "Gene set")
+dev.off()
+
+
+lcl_y_ordered <- lcl_y_GO$goBP[order(lcl_y_GO$goBP$pval, decreasing=FALSE),][c(1:10),]
+lcl_y_ordered$GeneSet <- factor(lcl_y_ordered$GeneSet, levels = lcl_y_ordered$GeneSet)
+pdf(file="LCL_y_sig.pdf", height=2, width=7)
+ggplot(data = lcl_y_ordered, aes(y = GeneSet , x = enrichment, fill=-log10(pval))) + 
+  geom_bar(stat = "identity") +
+  theme_classic(base_size=8) + theme(axis.line = element_line(size = 0.25,
+    linetype = "solid"), axis.ticks = element_line(colour = "black",
+    size = 0.25), axis.text = element_text(colour = "black")) +labs(x = "Enrichment", y = "Gene set")
+dev.off()
+
+fib_x_ordered <- fib_x_GO$goBP[order(fib_x_GO$goBP$pval, decreasing=FALSE),][c(1:10),]
+fib_x_ordered$GeneSet <- factor(fib_x_ordered$GeneSet, levels = fib_x_ordered$GeneSet)
+pdf(file="Fib_X_sig.pdf", height=2, width=7)
+ggplot(data = fib_x_ordered, aes(y = GeneSet , x = enrichment, fill=-log10(pval))) + 
+  geom_bar(stat = "identity") +
+  theme_classic(base_size=8) + theme(axis.line = element_line(size = 0.25,
+    linetype = "solid"), axis.ticks = element_line(colour = "black",
+    size = 0.25), axis.text = element_text(colour = "black")) +labs(x = "Enrichment", y = "Gene set")
+dev.off()
+
+fib_y_ordered <- fib_y_GO$goBP[order(fib_y_GO$goBP$pval, decreasing=FALSE),][c(1:10),]
+fib_y_ordered$GeneSet <- factor(fib_y_ordered$GeneSet, levels = fib_y_ordered$GeneSet)
+pdf(file="Fib_Y_sig.pdf", height=2, width=7)
+ggplot(data = fib_y_ordered, aes(y = GeneSet , x = enrichment, fill=-log10(pval))) + 
+  geom_bar(stat = "identity") +
+  theme_classic(base_size=8) + theme(axis.line = element_line(size = 0.25,
+    linetype = "solid"), axis.ticks = element_line(colour = "black",
+    size = 0.25), axis.text = element_text(colour = "black")) +labs(x = "Enrichment", y = "Gene set")
+dev.off()
+```
+#Analysis of the union of all LCL and Fib X and Y responsive genes!
+```{r}
+AR_values <- read.delim(file=paste0(myPath,"Annotations/all_AR_annotation_20230530.txt"), stringsAsFactors = FALSE)
+rownames(AR_values) <- AR_values$Gene
+
+AR_values_subject <- AR_values[AR_values$Final_XCI_Call %in% c("Subject"),]
+
+lcl_x_res_exp <- na.omit(read.delim(file=paste0(myPath,"Linear_regressions/LCLs/lcl_x_count_expressed.txt"), stringsAsFactors = FALSE))
+rownames(lcl_x_res_exp) <- lcl_x_res_exp$gene_name.107
+lcl_x_res_exp_auto_Xa <- lcl_x_res_exp[lcl_x_res_exp$Gene %in% c(autosome_genes, AR_values_subject$gene_name.84),]
+
+lcl_y_res_exp <- na.omit(read.delim(file=paste0(myPath,"Linear_regressions/LCLs/lcl_y_count_expressed.txt"), stringsAsFactors = FALSE))
+rownames(lcl_y_res_exp) <- lcl_y_res_exp$gene_name.107
+lcl_y_res_exp_auto_Xa <- lcl_y_res_exp[lcl_y_res_exp$Gene %in% c(autosome_genes, AR_values_subject$gene_name.84),]
+
+fib_x_res_exp <- na.omit(read.delim(file=paste0(myPath,"Linear_regressions/Fibroblasts/fib_x_count_expressed.txt"), stringsAsFactors = FALSE))
+rownames(fib_x_res_exp) <- fib_x_res_exp$gene_name.107
+fib_x_res_exp_auto_Xa <- fib_x_res_exp[fib_x_res_exp$Gene %in% c(autosome_genes, AR_values_subject$gene_name.84),]
+
+fib_y_res_exp <- na.omit(read.delim(file=paste0(myPath,"Linear_regressions/Fibroblasts/fib_y_count_expressed.txt"), stringsAsFactors = FALSE))
+rownames(fib_y_res_exp) <- fib_y_res_exp$gene_name.107
+fib_y_res_exp_auto_Xa <- fib_y_res_exp[fib_y_res_exp$Gene %in% c(autosome_genes, AR_values_subject$gene_name.84),]
+
+union_lcl_fib_auto_exp <- union(lcl_x_res_exp_auto_Xa$gene_name.107, fib_x_res_exp_auto_Xa$gene_name.107)
+
+union_lcl_fib_auto_sig <- union(lcl_x_res_exp_auto_Xa[lcl_x_res_exp_auto_Xa$padj < 0.05,"gene_name.107"], union(lcl_y_res_exp_auto_Xa[lcl_y_res_exp_auto_Xa$padj < 0.05, "gene_name.107"], union(fib_x_res_exp_auto_Xa[fib_x_res_exp_auto_Xa$padj < 0.05, "gene_name.107"], fib_y_res_exp_auto_Xa[fib_y_res_exp_auto_Xa$padj < 0.05, "gene_name.107"])))
+
+union_GO <- GO_enrichment(testGenes = union_lcl_fib_auto_sig, backgroundGenes = union_lcl_fib_auto_exp, gene_sets =  c("goBP"), fileName = "union_all")
+union_ordered <- union_GO$goBP[union_GO$goBP$padj < 0.05,]
+union_ordered <- union_ordered[order(union_ordered$padj, decreasing = FALSE),]
+union_ordered$GeneSet <- factor(union_ordered$GeneSet, levels = union_ordered$GeneSet)
+
+
+pdf(file="union_GO.pdf", height=2.5, width=7)
+ggplot(data = union_ordered, aes(y = GeneSet , x = enrichment, fill=-log10(padj))) + 
+  geom_bar(stat = "identity") +
+  theme_classic(base_size=8) + theme(axis.line = element_line(size = 0.25,
+    linetype = "solid"), axis.ticks = element_line(colour = "black",
+    size = 0.25), axis.text = element_text(colour = "black")) +labs(x = "Enrichment", y = "Gene set")
+dev.off()
+```
+
+
