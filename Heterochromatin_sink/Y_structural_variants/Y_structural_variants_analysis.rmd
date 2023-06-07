@@ -1,0 +1,215 @@
+---
+title: "Analysis of Y Chromosome Structural Variants To Investigate the Influence of Y heterochromatin on Global Gene Expression"
+output: html_notebook
+---
+
+#Setup
+```{r}
+myPath <-   #ADD PATH TO GITHUB FOLDER
+
+suppressPackageStartupMessages(library("DESeq2"))
+library(ggplot2)
+
+#Set up sex chromosome gene lists, using gencode v84 as "Gene" list
+geneAnno <- na.omit(read.delim(file=paste0(myPath,"Annotations/geneAnno_proteinCoding_lncRNA_v107_20230426.txt"), stringsAsFactors = FALSE))
+#Main "Gene" name will be ensembl84
+colnames(geneAnno)[c(2,4:6)] <- c("Gene","chr","start","stop")
+#Only include genes in both v84 and v107
+geneAnno <- geneAnno[! is.na(geneAnno$Gene),]
+geneAnno <- geneAnno[! duplicated(geneAnno$gene_name.107) & ! geneAnno$gene_name.107 %in% c("") & ! duplicated(geneAnno$Gene),]
+geneAnno_x <- geneAnno[geneAnno$chr == "chrX",]
+geneAnno_y <- geneAnno[geneAnno$chr == "chrY",]
+X_genes_all <-as.character(geneAnno_x$Gene)
+Y_genes_all <-as.character(geneAnno_y$Gene)
+sexChrom_genes <- c(X_genes_all,Y_genes_all)
+PAR1_genes <- geneAnno_x[geneAnno_x$start < 2691188,]$Gene
+PAR2_genes <- c("SPRY3","VAMP7","IL9R","WASH6P")
+PAR_genes_all <- c(PAR1_genes,PAR2_genes)
+NPX_genes <- X_genes_all[! X_genes_all %in% PAR_genes_all]
+NPY_genes <- Y_genes_all[! Y_genes_all %in% PAR_genes_all]
+autosome_genes <- geneAnno[! geneAnno$chr %in% c("chrX","chrY"),"Gene"]
+
+NPX_ypairs = c("SOX3", "ZFX", "DDX3X", "KDM6A","KDM5C","USP9X","EIF1AX","RPS4X","AMELX","TXLNG","TMSB4X","NLGN4X","TBL1X","PRKX")
+NPY_xpairs = c("SRY", "ZFY", "DDX3Y", "UTY","KDM5D","USP9Y","EIF1AY","RPS4Y1","RPS4Y2", "AMELY","TXLNGY","TMSB4Y","NLGN4Y","TBL1Y","PRKY")
+```
+
+#Bring in metadata
+```{r}
+#read in the metadata table
+metadata <-read.delim(paste0(myPath,"Linear_regressions/metadata.txt"), stringsAsFactors = FALSE)
+
+#restrict to cell type and karyotype
+metadata_lcl <- metadata[metadata$karyotype %in% c("X","XY","XYY","XYYYY","XiYp") & metadata$cell_type == "LCL" & metadata$Technical_replicate == "N",]
+rownames(metadata_lcl) <- metadata_lcl$sample
+metadata_lcl_rev <- metadata_lcl
+metadata_lcl_rev[metadata_lcl_rev$sample == "5557A_XiYp", "karyotype"] <- "XpiYp"
+```
+
+##Processing raw RNA-seq data
+```{r, eval=FALSE}
+### The following code is used to run this analysis from the raw data. Skip below to begin with provided processed data file. ###
+## You must obtain access to the raw data through dbGaP (accession # phs002481). Download the fastq files, and run kallisto using the following command:
+# kallisto quant -i KALLISTO_INDEX_FILE -t 16 --bias --plaintext -o  /kallisto_OUTPUT_FOLDER/sampleName/ file1fastq.gz file2fastq.gz
+
+#Bring in list of Kallisto output files
+# myFileTable <- read.table(file = paste0(myPath,"all_rnaseq_files.txt"), row.names = 1, stringsAsFactors = FALSE)
+# myFiles <- myFileTable$V2
+# names(myFiles) <- rownames(myFileTable)
+# 
+# # subset file list for the samples I will use in this analysis
+# myFiles_lcl <- myFiles[metadata_lcl$sample]
+# 
+# #run tximport to bring in mapped samples
+# suppressPackageStartupMessages(library("tximport"))
+# 
+# annofile <-read.delim(file=paste0(myPath,"Annotations/annotation_with_ERCC.txt"),sep = " ")
+# tx2gene <-data.frame("TXNAME" = annofile$transcript_id,"GENEID" = annofile$gene_name)
+# 
+# txi_strucvar_y_lcl <- tximport(myFiles_lcl, type = "kallisto", tx2gene = tx2gene)
+# save(txi_strucvar_y_lcl, file=paste0(myPath,"Heterochromatin_sink/Y_structural_variants/txi_strucvar_y_lcl.rda"))
+# load(file=paste0(myPath,"Heterochromatin_sink/iYp_samples/txi_strucvar_y_lcl.rda"))
+# write.table(x=txi_strucvar_y_lcl$counts, file="txi_strucvar_y_lcl_counts.txt", sep="\t", quote=FALSE, row.names = TRUE, col.names = TRUE)
+# write.table(x=txi_strucvar_y_lcl$abundance, file="txi_strucvar_y_lcl_TPM.txt", sep="\t", quote=FALSE, row.names = TRUE, col.names = TRUE)
+
+#Adjust sample tables to match list of samples in txi
+sample_table_lcl <- metadata_lcl_rev[colnames(txi_strucvar_y_lcl$counts), c("karyotype","batch_libprep")]
+```
+
+#Load processed data
+```{r}
+lcl_strucvar_y_counts <- read.delim(file=paste0(myPath,"Heterochromatin_sink/Y_structural_variants/txi_strucvar_y_lcl_counts.txt"), check.names = FALSE)
+
+#bring in expressed genes from linear regressions
+load(file=paste0(myPath,"Linear_regressions/LCLs/lcl_expressed.rda"))
+```
+
+#Do linear regressions with DESEQ2 and run batch corrections
+```{r}
+### THIS CODE CHUNK TAKES A LITTLE LONGER TO RUN. RUN IT ONCE AND THEN COMMENT OUT THE CODE AND LOAD FROM THE R DATA FILES.
+#If you have the tximport files, use DESeqDataSetFromTximport()
+# dds_strucvar_y_lcl <- DDESeqDataSetFromMatrix(round(lcl_strucvar_y_counts), colData = sample_table_lcl, design = ~ batch_libprep + karyotype)
+# dds_strucvar_y_lcl <- DESeq(dds_strucvar_y_lcl)
+# save(dds_strucvar_y_lcl, file=paste0(myPath,"Heterochromatin_sink/Y_structural_variants/dds_strucvar_y_lcl_v2.rda"))
+
+#once you run this and save, you can save time by just loading the file using the code below:
+load(file=paste0(myPath,"Heterochromatin_sink/Y_structural_variants/dds_strucvar_y_lcl_v2.rda"))
+lcl_norm_counts <- counts(dds_strucvar_y_lcl,normalized=TRUE)
+
+library(limma)
+
+#For plotting, we will use the normalized counts corrected for the other covariates.
+vst_dds_strucvar_y_lcl <- vst(dds_strucvar_y_lcl, blind=FALSE)
+
+#Control for batch
+vst_dds_strucvar_y_lcl_batch <- vst_dds_strucvar_y_lcl
+design0 <- model.matrix(~sample_table_lcl$karyotype)
+assay(vst_dds_strucvar_y_lcl_batch) <- removeBatchEffect(x = assay(vst_dds_strucvar_y_lcl_batch), batch = sample_table_lcl$batch_libprep, design=design0)
+
+#Make a list of the karyotypes I want to plot for each.
+XiYp_list_lcl <- c("X","XY","XYY","XpiYp","XiYp","XYYYY") 
+
+#bring in list of Y-responsive genes 
+lcl_fib_x_y_auto_res <- read.delim(file=paste0(myPath,"Linear_regressions/lcl_fib_XandY_results_auto_expressed.txt"), stringsAsFactors = FALSE)
+
+lcl_y_resp <- lcl_fib_x_y_auto_res[lcl_fib_x_y_auto_res$lcl_padj_Y < 0.05 & ! is.na(lcl_fib_x_y_auto_res$lcl_padj_Y), "Gene.y"]
+
+lcl_x_y_resp <- lcl_fib_x_y_auto_res[lcl_fib_x_y_auto_res$lcl_padj_Y < 0.05 & ! is.na(lcl_fib_x_y_auto_res$lcl_padj_Y) & lcl_fib_x_y_auto_res$lcl_padj_X < 0.05, "Gene.y"]
+lcl_x_y_resp_up <- lcl_fib_x_y_auto_res[lcl_fib_x_y_auto_res$lcl_padj_Y < 0.05 & ! is.na(lcl_fib_x_y_auto_res$lcl_padj_Y) & lcl_fib_x_y_auto_res$lcl_padj_X < 0.05 & lcl_fib_x_y_auto_res$lcl_log2FC_X  > 0, "Gene.y"]
+lcl_x_y_resp_down <- lcl_fib_x_y_auto_res[lcl_fib_x_y_auto_res$lcl_padj_Y < 0.05 & ! is.na(lcl_fib_x_y_auto_res$lcl_padj_Y) & lcl_fib_x_y_auto_res$lcl_padj_X < 0.05 & lcl_fib_x_y_auto_res$lcl_log2FC_X  < 0, "Gene.y"]
+```
+
+# Plot gene expression of structural variants
+## PCA LCL XiYp
+```{r}
+library(ggrepel)
+myCol <- c("#D3D3D3","#0099ff","#0099ff","#989898","#606060","#000000")
+mySize <- c(1.5, 1.5)
+
+#XiYp
+#select LCL samples
+mySamples_xiyp_lcl <- data.frame(sample_table_lcl[sample_table_lcl$karyotype %in% XiYp_list_lcl, ], "condition" = rep(x=0))
+mySamples_xiyp_lcl[mySamples_xiyp_lcl$karyotype == "XiYp","condition"] <- 1
+mySamples_xiyp_lcl$condition <- as.factor(mySamples_xiyp_lcl$condition)
+mySamples_xiyp_lcl$karyotype <- factor(x = mySamples_xiyp_lcl$karyotype, levels = XiYp_list_lcl)
+
+
+pdf(file="pca_yresp_iYp.pdf",height=1.9, width=1.9)
+#X and Y responsive autosomal genes
+plotPCA(vst_dds_strucvar_y_lcl_batch[lcl_x_y_resp,rownames(mySamples_xiyp_lcl)],intgroup=c("karyotype"), ntop=442)
+myData <- data.frame("Gene" = lcl_x_y_resp, assay(vst_dds_strucvar_y_lcl_batch[lcl_x_y_resp,rownames(mySamples_xiyp_lcl)]), check.names = FALSE)
+
+write.table(myData, file="data_for_lcl_x_y_pca.txt", row.names = FALSE, col.names = TRUE, quote=FALSE, sep="\t")
+
+lcl_x_y_pca <- plotPCA(object = vst_dds_strucvar_y_lcl_batch[lcl_x_y_resp,rownames(mySamples_xiyp_lcl)],intgroup=c("karyotype"), 
+                               returnData = TRUE, ntop = 442)
+# write.table(x=lcl_x_y_pca, file="lcl_x_y_pca_data")
+lcl_x_y_pca <- data.frame(droplevels.data.frame(x = lcl_x_y_pca, except = c(1,2)), "condition" = mySamples_xiyp_lcl$condition)
+
+ggplot(lcl_x_y_pca, aes(x=PC1, y=PC2, color=group)) +
+    geom_point() +
+    scale_color_manual(values = myCol) +
+    scale_size_manual(values = mySize) +
+  geom_text_repel(data = lcl_x_y_pca[lcl_y_pca$karyotype == "XiYp",], mapping=aes(x=PC1, y=PC2, label=name), size=1) +
+  theme_classic(base_size = 8) + 
+  theme(
+    legend.position = "none",
+      axis.text = element_text(color = "black"), 
+      axis.ticks = element_line(color = "black", size = 0.25), 
+      axis.line = element_line(size = 0.25)
+      ) +
+  labs(title="X and Y-responsive, LCL, p<0.05", 
+       x="PC1: 34% variance", y="PC2: 10% variance") 
+dev.off()
+
+```
+
+
+#Plot Y chr genes
+```{r}
+library(tidyr)
+data_summary <- function(x){
+  m <- median(x, na.rm=TRUE)
+  ymin <- quantile(x, na.rm=TRUE)[2]
+  ymax <- quantile(x, na.rm=TRUE)[4]
+  test <- c("y"=m,"ymin"=ymin,"ymax"=ymax)
+  names(test) <- c("y","ymin","ymax")
+  return(test)
+}
+
+
+lcl_par_NPY_genes <- c(intersect(NPY_xpairs,lcl_expressed$expYGenes),lcl_expressed$expPARGenes)
+lcl_par_NPY_genes <- setdiff(lcl_par_NPY_genes, PAR2_genes)
+lcl_par_NPY_genes_allData <- geneAnno[geneAnno$Gene %in% lcl_par_NPY_genes, ]
+lcl_par_NPY_genes_order <- lcl_par_NPY_genes_allData[order(lcl_par_NPY_genes_allData$start) ,"Gene"]
+lcl_par_NPY_genes_edit <- c("PLCXD1","GTPBP6","PPP2R3B","IL3RA","SLC25A6",
+                            "ASMTL","P2RY8","AKAP17A","DHRSX","ZBED1",
+                            "CD99","RPS4Y1","ZFY","PRKY","USP9Y" ,"DDX3Y" ,"UTY" , "TMSB4Y","NLGN4Y", "TXLNGY",
+                            "KDM5D", "EIF1AY"    )
+
+#NPY and PAR genes
+metadata_lcl_with_expn <- data.frame(metadata_lcl_rev[,c(1:2)], t(lcl_norm_counts[lcl_par_NPY_genes_edit, metadata_lcl_rev$sample]))
+
+metadata_lcl_with_expn_gather <- gather(metadata_lcl_with_expn, key="Gene", value="Normalized_counts", 3:24)
+metadata_lcl_with_expn_gather$karyotype <- factor(metadata_lcl_with_expn_gather$karyotype, levels = c("X","XY","XpiYp","XiYp","XYY","XYYYY"))
+metadata_lcl_with_expn_gather$Gene <- factor(metadata_lcl_with_expn_gather$Gene, 
+                                             levels = lcl_par_NPY_genes_edit)
+
+myPlot2 <- ggplot(data=metadata_lcl_with_expn_gather, mapping = aes(x=karyotype, y=Normalized_counts)) + 
+  geom_jitter(width = 0.1, color="#00000080", stroke=0, size=0.75) + 
+  geom_violin(color="#000000", fill="#00000020", scale="width", size=0.25)  +
+  stat_summary(fun.data=data_summary, size=0.25, pch=20) +
+  theme_classic(base_size=8) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust=1),
+      axis.text = element_text(color = "black"), 
+      axis.ticks = element_line(color = "black", size = 0.25), 
+      axis.line = element_line(size = 0.25)
+      ) + labs(x="Karyotype",y="Normalized counts")
+
+
+pdf(file="iYp_exp_Y_genes_2.pdf", width=8.25, height=10)
+myPlot2 + facet_wrap( ~ Gene, nrow=6, scales="free_y") + labs(title= "Expressed PAR & NPY genes with X pairs, LCLs")
+dev.off()
+```
+
+
