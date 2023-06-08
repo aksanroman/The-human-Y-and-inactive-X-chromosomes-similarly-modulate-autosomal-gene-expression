@@ -1,0 +1,277 @@
+---
+title: "ER_AR_venn diagrams - ChIP-seq and RNA-seq analysis"
+output: html_notebook
+---
+
+#setup
+```{r}
+myPath <- #Path to github folder
+
+source(file=paste0(myPath,"Scripts/Function_paper2_corrPlot_deming_20230419.R"))
+source(file=paste0(myPath,"Scripts/Function_threeGroupVenn_geneNames_20221202.R"))
+source(file=paste0(myPath,"Scripts/Function_makeSymmetric_X_Y_20221103.R"))
+source(file=paste0(myPath,"Scripts/Function_deseqFactorAnalysis_20221103.R"))
+source(file=paste0(myPath,"Scripts/Function_ASR-QQmanhattan_20221103.R"))
+source(file=paste0(myPath,"Scripts/Function_DESeqManhattan_noM_col_20221108.R"))
+
+
+#This gene annotation includes protein coding genes and lncRNAs
+geneAnno <- na.omit(read.delim(file=paste0(myPath,"Annotations/geneAnno_proteinCoding_lncRNA_v107_20230426.txt"), stringsAsFactors = FALSE))
+#Main "Gene" name will be ensembl84
+colnames(geneAnno)[c(2,4:6)] <- c("Gene","chr","start","stop")
+#Only include genes in both v84 and v107
+geneAnno <- geneAnno[! is.na(geneAnno$Gene),]
+geneAnno <- geneAnno[! duplicated(geneAnno$gene_name.107) & ! geneAnno$gene_name.107 %in% c("") & ! duplicated(geneAnno$Gene),]
+geneAnno_x <- geneAnno[geneAnno$chr == "chrX",]
+geneAnno_y <- geneAnno[geneAnno$chr == "chrY",]
+X_genes_all <-as.character(geneAnno_x$Gene)
+Y_genes_all <-as.character(geneAnno_y$Gene)
+xChrom_genes <- c(X_genes_all,Y_genes_all)
+PAR1_genes <- geneAnno_x[geneAnno_x$start < 2691188,]$Gene
+PAR2_genes <- c("SPRY3","VAMP7","IL9R","WASH6P")
+PAR_genes_all <- c(PAR1_genes,PAR2_genes)
+NPX_genes <- X_genes_all[! X_genes_all %in% PAR_genes_all]
+NPY_genes <- Y_genes_all[! Y_genes_all %in% PAR_genes_all]
+
+library("tximport")
+library("DESeq2")
+
+#bring in the annotation file and collapse the transcripts into genes
+annofile <- read.delim(file=paste0(myPath,"Annotations/annotation_with_ERCC.txt"), sep=" ")
+tx2gene <- data.frame("TXNAME"=annofile$transcript_id, "GENEID"=annofile$gene_name)
+
+load(file=paste0(myPath,"Linear_regressions/Fibroblasts/fib_expressed.rda"))
+load(file=paste0(myPath,"Linear_regressions/LCLs/lcl_expressed.rda"))
+```
+
+#AR analysis
+##RNAseq analysis
+##Raw data
+```{r, eval=FALSE}
+#read in the metadata table and restrict to the appropriate samples
+metadata_AR <- read.delim(file=paste0(myPath,"Hormone_analysis/AR_metadata.txt"), stringsAsFactors = FALSE, header = TRUE)
+
+#Make file list:
+# my_files <- paste0("PATH TO AR DATA KALLISTO FILES")
+# names(my_files) <- metadata_AR$Run
+# 
+# #do tximport
+# txi_AR <- tximport(my_files, type = "kallisto", tx2gene = tx2gene)
+# #save the tximport results so you can read them into R later
+# save(txi_AR, file = "txi_AR.rda")
+load(file = "txi_AR.rda")
+#write out a table of counts and TPM values
+write.table(txi_AR$counts, file="tximport_AR_gene_counts.txt",quote=FALSE,sep="\t")
+write.table(txi_AR$abundance, file="tximport_AR_gene_TPM.txt",quote=FALSE,sep="\t")
+
+#Get expressed genes in LNCaP
+TPM_LnCap <- data.frame(txi_AR$abundance)
+TPM_LnCap$median <- apply(TPM_LnCap, 1, median)
+LnCAP_expressed <- subset(TPM_LnCap, median > 1) 
+LnCAP_expressed_anno <- LnCAP_expressed[rownames(LnCAP_expressed) %in% geneAnno$Gene,]
+LNCAP_expressed_anno_genes <- row.names(LnCAP_expressed_anno)
+write.table(LNCAP_expressed_anno_genes, file="LNCAP_expressed.txt",quote=FALSE,sep="\t", row.names=FALSE, col.names=FALSE)
+```
+
+##With processed data
+```{r}
+lncap_counts <- read.delim(file=paste0(myPath,"Hormone_analysis/tximport_AR_gene_counts.txt"), check.names = FALSE)
+LNCAP_expressed_anno_genes <- read.delim(file=paste0(myPath,"Hormone_analysis/LNCAP_expressed.txt"))
+
+#Run Deseq
+#create DEseq datasets using the treatment column as the covariate
+#If you can generate the tximport files, use DESeqDataSetFromTximport()
+dds_AR <- DESeqDataSetFromMatrix(round(lncap_counts), colData = metadata_AR, design = ~ treatment)
+dds_AR <- DESeq(dds_AR)
+save(dds_AR, file="dds_AR.rda")
+# load(file="dds_AR.rda")
+
+#Get results of AR-responsive genes
+myList <- matrix(c("DHT","EtOH"),ncol=2, byrow = TRUE)
+deseqFactorAnalysis(deseqObject = dds_AR, myVariable = "treatment", comparisonList = myList, expressedGeneList = LNCAP_expressed_anno_genes, p_value = 0.05, myTitle = "AR_")
+
+#Bring in output froma above analysis: RNA-seq analysis #DHT treatment vs control in LNCap Cells
+results_AR <- read.delim(file="AR__DHTvsEtOH_DESeq_expressed.txt", stringsAsFactors = FALSE)
+results_AR_sig <- subset(results_AR, padj < 0.05)
+
+#Bring in ChIP-seq to get direct target genes.
+AR_closest_gene <- read.delim(file=paste0(myPath,"Hormone_analysis/AR_closestGene.bed"), header=FALSE, stringsAsFactors = FALSE)
+AR_closest_gene_30kb <- AR_closest_gene[AR_closest_gene$V15 < 30000,]
+AR_genes_30kb <- unique(AR_closest_gene_30kb$V14)
+
+# Generating list of sig AR regulated genes by my DESeq and Chip Seq Analysis
+AR_direct_target_expn_30kb <- results_AR_sig[results_AR_sig$Gene %in%  AR_genes_30kb,]
+AR_direct_target_expn_30kb_anno <- merge(AR_direct_target_expn_30kb, geneAnno, by="Gene", all.x=TRUE)
+rownames(AR_direct_target_expn_30kb_anno) <- AR_direct_target_expn_30kb_anno$Gene
+write.table(AR_direct_target_expn_30kb_anno, file="AR_direct_target_expn_30kb.txt", row.names=FALSE, col.names=TRUE, sep="\t", quote=FALSE)
+```
+
+##Compare AR data to X- and Y-response
+```{r}
+# Generating list of autosomal genes expressed in both LNCAP and Fibroblasts
+LNCAP_fib_expressed <- intersect(LNCAP_expressed_anno_genes, fib_expressed$expAutoGenes)
+
+# Generating list of autosomal genes expressed in both LNCAP and LCLs
+LNCAP_LCL_expressed <- intersect(LNCAP_expressed_anno_genes, lcl_expressed$expAutoGenes)
+
+# Making 3 way venn diagram: AR responsive/X responsive/Y responsive for FIB 
+x_y_auto_results <- read.delim(file=paste0(myPath,"Linear_regressions/lcl_fib_XandY_results_auto_expressed.txt"), stringsAsFactors = FALSE)
+
+fib_results <- x_y_auto_results[! is.na(x_y_auto_results$fib_padj_X),]
+rownames(fib_results) <- fib_results$Gene
+fib_res_LNCAP <- fib_results[fib_results$Gene %in% LNCAP_fib_expressed,]
+fib_x_sig <- subset(fib_res_LNCAP, fib_padj_X < 0.05)
+fib_y_sig <- subset(fib_res_LNCAP, fib_padj_Y < 0.05)
+
+#get direct targets autosomal exp fib
+AR_direct_targets_30kb_fib <- intersect(AR_direct_target_expn_30kb_anno$Gene, LNCAP_fib_expressed)
+
+#Make venn diagram
+threeGroupVenn_geneNames(setA = fib_x_sig$Gene, setAname = "X-responsive", setB = fib_y_sig$Gene, setBname =  "Y-responsive", setC = AR_direct_targets_30kb_fib, setCname = "AR direct targets", expGenes = LNCAP_fib_expressed, filename = 'AR_fib_venn.pdf')
+
+#Make scatterplots for overlapping genes
+fib_X_ar <- intersect(fib_x_sig$Gene, AR_direct_targets_30kb_fib)
+fib_Y_ar <- intersect(fib_y_sig$Gene, AR_direct_targets_30kb_fib)
+
+myData <- data.frame("x" = fib_x_sig[fib_X_ar, "fib_log2FC_X"], "y" = AR_direct_target_expn_30kb_anno[fib_X_ar, "log2FoldChange"])
+paper2_corrPlot_deming(myData = myData, myTitle = "fib_AR_x_overlap_corrplot.pdf", myWidth = 2.25, myHeight = 2.25, myXlab = "Log2 fold change per Chr X", myYlab = "DHT response log2 Fold Change", myPlotTitle ="Fibroblast X and AR overlap", demingBehind = TRUE, negIdentity = FALSE, seq_num = 0.005)
+
+
+myData <- data.frame("x" = fib_y_sig[fib_Y_ar, "fib_log2FC_Y"], "y"=AR_direct_target_expn_30kb_anno[fib_Y_ar, "log2FoldChange"])
+paper2_corrPlot_deming(myData = myData, myTitle = "fib_AR_y_overlap_corrplot.pdf", myWidth = 2.25, myHeight = 2.25, myXlab = "Log2 fold change per Chr Y", myYlab = "DHT response log2 Fold Change", myPlotTitle ="Fibroblast Y and AR overlap", demingBehind = TRUE, negIdentity = FALSE, seq_num = 0.1)
+
+
+# Making 3 way venn diagram vectors: AR responsive/X responsive/Y responsive for LCL 
+lcl_results <- x_y_auto_results[! is.na(x_y_auto_results$lcl_padj_X),]
+rownames(lcl_results) <- lcl_results$Gene
+lcl_results_lncap <- lcl_results[LNCAP_LCL_expressed,]
+lcl_x_sig <- subset(lcl_results_lncap, lcl_padj_X < 0.05)
+lcl_y_sig <- subset(lcl_results_lncap, lcl_padj_Y < 0.05)
+AR_direct_targets_30kb_lcl <- intersect(AR_direct_target_expn_30kb_anno$Gene, LNCAP_LCL_expressed)
+
+#Make venn diagram
+threeGroupVenn_geneNames(setA = lcl_x_sig$Gene, setAname = "X-responsive", setB = lcl_y_sig$Gene, setBname =  "Y-responsive", setC = AR_direct_targets_30kb_lcl, setCname = "AR direct targets", expGenes = LNCAP_LCL_expressed, filename = 'AR_LCL_venn.pdf')
+
+#Make scatterplots for overlapping genes
+LCL_X_ar <- intersect(lcl_x_sig$Gene, AR_direct_targets_30kb_lcl)
+LCL_Y_ar <- intersect(lcl_y_sig$Gene, AR_direct_targets_30kb_lcl)
+
+myData <- data.frame("x" = lcl_x_sig[LCL_X_ar, "lcl_log2FC_X"], "y" = AR_direct_target_expn_30kb_anno[LCL_X_ar, "log2FoldChange"])
+paper2_corrPlot_deming(myData = myData, myTitle = "lcl_AR_x_overlap_corrplot.pdf", myWidth = 2.25, myHeight = 2.25, myXlab = "Log2 fold change per Chr X", myYlab = "DHT response log2 Fold Change", myPlotTitle ="LCL X and AR overlap", demingBehind = FALSE, negIdentity = FALSE, seq_num = 0.005)
+
+myLims <- makeSymmetric_X_Y(x_vector = lcl_y_sig[LCL_Y_ar, "lcl_log2FC_Y"], y_vector = AR_direct_target_expn_30kb_anno[LCL_Y_ar, "log2FoldChange"])
+myData <- data.frame("x" = lcl_y_sig[LCL_Y_ar, "lcl_log2FC_Y"], "y" = AR_direct_target_expn_30kb_anno[LCL_Y_ar, "log2FoldChange"])
+paper2_corrPlot_deming(myData = myData, myTitle = "lcl_AR_y_overlap_corrplot.pdf", myWidth = 2.25, myHeight = 2.25, myXlab = "Log2 fold change per Chr Y", myYlab = "DHT response log2 Fold Change", myPlotTitle ="LCL Y and AR overlap", demingBehind = FALSE, negIdentity = FALSE, seq_num = 0.005)
+```
+
+#ER analysis
+##RNAseq analysis
+##Raw data
+```{r, eval=FALSE}
+#read in the metadata table and restrict to the appropriate samples
+metadata_ER <- read.delim(file=paste0(myPath,"Hormone_analysis/ER_metadata.txt"), stringsAsFactors = FALSE, header = TRUE)
+
+#Make file list:
+# my_files <- paste0("PATH TO ER KALLISTO FILES")
+# names(my_files) <- metadata_ER$Run
+# 
+# #do tximport
+# txi_ER <- tximport(my_files, type = "kallisto", tx2gene = tx2gene)
+# #save the tximport results so you can read them into R later
+# save(txi_ER, file = "txi_ER.rda")
+load(file = "txi_ER.rda")
+#write out a table of counts and TPM values
+write.table(txi_ER$counts, file="tximport_ER_gene_counts.txt",quote=FALSE,sep="\t")
+write.table(txi_ER$abundance, file="tximport_ER_gene_TPM.txt",quote=FALSE,sep="\t")
+
+#Get expressed genes in MCF7
+TPM_MCF7 <- data.frame(txi_ER$abundance)
+TPM_MCF7$median <- apply(TPM_MCF7, 1, median)
+MCF7_expressed <- subset(TPM_MCF7, median > 1) 
+MCF7_expressed_anno <- MCF7_expressed[rownames(MCF7_expressed) %in% geneAnno$Gene,]
+MCF7_expressed_anno_genes <- row.names(MCF7_expressed_anno)
+write.table(MCF7_expressed_anno_genes, file="MCF7_expressed.txt",quote=FALSE,sep="\t", row.names=FALSE, col.names=FALSE)
+```
+
+##Processed data
+```{r}
+mcf7_counts <- read.delim(file=paste0(myPath,"Hormone_analysis/tximport_ER_gene_counts.txt"), check.names = FALSE)
+MCF7_expressed_anno_genes <- read.delim(file=paste0(myPath,"Hormone_analysis/MCF7_expressed.txt"))
+
+# #Run Deseq
+# #create DEseq datasets using the treatment column as the covariate
+dds_ER <- DESeqDataSetFromMatrix(round(mcf7_counts), colData = metadata_ER, design = ~ treatment)
+dds_ER <- DESeq(dds_ER)
+save(dds_ER, file="dds_ER.rda")
+# load(file="dds_ER.rda")
+
+#Get results of ER-responsive genes
+myList <- matrix(c("E2","DMSO"),ncol=2, byrow = TRUE)
+deseqFactorAnalysis(deseqObject = dds_ER, myVariable = "treatment", comparisonList = myList, expressedGeneList = MCF7_expressed_anno_genes, p_value = 0.05, myTitle = "ER")
+
+#Bring in output froma above analysis: RNA-seq analysis #E2 treatment vs control in MCF7 Cells
+results_ER <- read.delim(file="ER_E2vsDMSO_DESeq_expressed.txt", stringsAsFactors = FALSE)
+results_ER_sig <- subset(results_ER, padj < 0.05)
+
+#Bring in ChIP-seq to get direct target genes.
+ER_closest_gene <- read.delim(file=paste0(myPath,"Hormone_analysis/ER_closestGene.bed"), header=FALSE, stringsAsFactors = FALSE)
+ER_closest_gene_30kb <- ER_closest_gene[ER_closest_gene$V15 < 30000,]
+ER_genes_30kb <- unique(ER_closest_gene_30kb$V14)
+
+# Generating list of sig ER regulated genes by my DESeq and Chip Seq Analysis
+ER_direct_target_expn_30kb <- results_ER_sig[results_ER_sig$Gene %in%  ER_genes_30kb,]
+ER_direct_target_expn_30kb_anno <- merge(ER_direct_target_expn_30kb, geneAnno, by="Gene", all.x=TRUE)
+rownames(ER_direct_target_expn_30kb_anno) <- ER_direct_target_expn_30kb_anno$Gene
+write.table(ER_direct_target_expn_30kb_anno, file="ER_direct_target_expn_30kb.txt", row.names=FALSE, col.names=TRUE, sep="\t", quote=FALSE)
+```
+
+##Compare ER data to X- and Y-response
+```{r}
+# Generating list of autosomal genes expressed in both MCF7 and Fibroblasts
+MCF7_fib_expressed <- intersect(MCF7_expressed_anno_genes, fib_expressed$expAutoGenes)
+
+# Generating list of autosomal genes expressed in both MCF7 and LCLs
+MCF7_LCL_expressed <- intersect(MCF7_expressed_anno_genes, lcl_expressed$expAutoGenes)
+
+# Making 3 way venn diagram: ER responsive/X responsive/Y responsive for FIB 
+fib_res_MCF7 <- fib_results[fib_results$Gene %in% MCF7_fib_expressed,]
+fib_x_sig <- subset(fib_res_MCF7, fib_padj_X < 0.05)
+fib_y_sig <- subset(fib_res_MCF7, fib_padj_Y < 0.05)
+
+#get direct targets autosomal exp fib
+ER_direct_targets_30kb_fib <- intersect(ER_direct_target_expn_30kb_anno$Gene, MCF7_fib_expressed)
+
+#Make venn diagram
+threeGroupVenn_geneNames(setA = fib_x_sig$Gene, setAname = "X-responsive", setB = fib_y_sig$Gene, setBname =  "Y-responsive", setC = ER_direct_targets_30kb_fib, setCname = "ER direct targets", expGenes = MCF7_fib_expressed, filename = 'ER_fib_venn.pdf')
+
+#Make scatterplots for overlapping genes
+fib_X_er <- intersect(fib_x_sig$Gene, ER_direct_targets_30kb_fib)
+fib_Y_er <- intersect(fib_y_sig$Gene, ER_direct_targets_30kb_fib)
+
+myData <- data.frame("x" = fib_x_sig[fib_X_er, "fib_log2FC_X"], "y" = ER_direct_target_expn_30kb_anno[fib_X_er, "log2FoldChange"])
+paper2_corrPlot_deming(myData = myData, myTitle = "fib_ER_X_overlap_corrplot.pdf", myWidth = 2.25, myHeight = 2.25, myXlab = "Log2 fold change per Chr X", myYlab = "E2 response log2 Fold Change", myPlotTitle ="Fibroblast X and ER overlap", demingBehind = TRUE, negIdentity = FALSE, seq_num = 0.25)
+
+myData <- data.frame("x" = fib_y_sig[fib_Y_er, "fib_log2FC_Y"], "y"=ER_direct_target_expn_30kb_anno[fib_Y_er, "log2FoldChange"])
+paper2_corrPlot_deming(myData = myData, myTitle = "fib_ER_Y_overlap_corrplot.pdf", myWidth = 2.25, myHeight = 2.25, myXlab = "Log2 fold change per Chr Y", myYlab = "E2 response log2 Fold Change", myPlotTitle ="Fibroblast Y and ER overlap", demingBehind = TRUE, negIdentity = FALSE, seq_num = 0.25)
+
+
+# Making 3 way venn diagram vectors: AR responsive/X responsive/Y responsive for LCL 
+lcl_results_mcf7 <- lcl_results[MCF7_LCL_expressed,]
+lcl_x_sig <- subset(lcl_results_mcf7, lcl_padj_X < 0.05)
+lcl_y_sig <- subset(lcl_results_mcf7, lcl_padj_Y < 0.05)
+ER_direct_targets_30kb_lcl <- intersect(ER_direct_target_expn_30kb_anno$Gene, MCF7_LCL_expressed)
+
+#Make venn diagram
+threeGroupVenn_geneNames(setA = lcl_x_sig$Gene, setAname = "X-responsive", setB = lcl_y_sig$Gene, setBname =  "Y-responsive", setC = ER_direct_targets_30kb_lcl, setCname = "ER direct targets", expGenes = MCF7_LCL_expressed, filename = 'ER_LCL_venn.pdf')
+
+#Make scatterplots for overlapping genes
+LCL_X_er <- intersect(lcl_x_sig$Gene, ER_direct_targets_30kb_lcl)
+LCL_Y_er <- intersect(lcl_y_sig$Gene, ER_direct_targets_30kb_lcl)
+
+myData <- data.frame("x" = lcl_x_sig[LCL_X_er, "lcl_log2FC_X"], "y" = ER_direct_target_expn_30kb_anno[LCL_X_er, "log2FoldChange"])
+paper2_corrPlot_deming(myData = myData, myTitle = "lcl_ER_X_overlap_corrplot.pdf", myWidth = 2.25, myHeight = 2.25, myXlab = "Log2 fold change per Chr X", myYlab = "E2 response log2 Fold Change", myPlotTitle ="LCL X and ER overlap", demingBehind = TRUE, negIdentity = FALSE, seq_num = 0.25)
+
+myData <- data.frame("x" = lcl_y_sig[LCL_Y_er, "lcl_log2FC_Y"], "y" = ER_direct_target_expn_30kb_anno[LCL_Y_er, "log2FoldChange"])
+paper2_corrPlot_deming(myData = myData, myTitle = "lcl_ER_Y_overlap_corrplot.pdf", myWidth = 2.25, myHeight = 2.25, myXlab = "Log2 fold change per Chr Y", myYlab = "E2 response log2 Fold Change", myPlotTitle ="LCL Y and ER overlap", demingBehind = TRUE, negIdentity = FALSE, seq_num = 1)
+
+```

@@ -1,0 +1,5 @@
+Run	treatment	genotype.variation	source_name
+SRR5026767	EtOH	Control	LNCaP control cell line
+SRR5026768	EtOH	Control	LNCaP control cell line
+SRR5026771	DHT	Control	LNCaP control cell line
+SRR5026772	DHT	Control	LNCaP control cell line
