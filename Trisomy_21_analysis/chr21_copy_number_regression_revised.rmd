@@ -1,0 +1,462 @@
+---
+title: "Modeling expression as a function of Chr 21 copy number"
+output: html_notebook
+---
+#Setup
+```{r}
+myPath <-  #ADD PATH TO GITHUB FOLDER
+#load DESeq2 library
+suppressPackageStartupMessages(library("DESeq2"))
+source(file=paste0(myPath,"Scripts/Function_paper2_corrPlot_deming_20230419.R"))
+source(file=paste0(myPath,"Scripts/Function_twoGroupVenn_geneNames_20221103.R"))
+source(file=paste0(myPath,"Scripts/Function_threeGroupVenn_geneNames_20221202.R"))
+source(file=paste0(myPath,"Scripts/Function_makeSymmetric_X_Y_20221103.R"))
+
+
+#Set up sex chromosome gene lists, using gencode v84 as "Gene" list
+geneAnno <- na.omit(read.delim(file=paste0(myPath,"Annotations/geneAnno_proteinCoding_lncRNA_v107_20230426.txt"), stringsAsFactors = FALSE))
+#Main "Gene" name will be ensembl84
+colnames(geneAnno)[c(2,4:6)] <- c("Gene","chr","start","stop")
+#Only include genes in both v84 and v107
+geneAnno <- geneAnno[! is.na(geneAnno$Gene),]
+geneAnno <- geneAnno[! duplicated(geneAnno$gene_name.107) & ! geneAnno$gene_name.107 %in% c("") & ! duplicated(geneAnno$Gene),]
+geneAnno_x <- geneAnno[geneAnno$chr == "chrX",]
+geneAnno_y <- geneAnno[geneAnno$chr == "chrY",]
+geneAnno_21 <- geneAnno[geneAnno$chr == "chr21",]
+
+X_genes_all <-as.character(geneAnno_x$Gene)
+Y_genes_all <-as.character(geneAnno_y$Gene)
+sexChrom_genes <- c(X_genes_all,Y_genes_all)
+PAR1_genes <- geneAnno_x[geneAnno_x$start < 2691188,]$Gene
+PAR2_genes <- c("SPRY3","VAMP7","IL9R","WASH6P")
+PAR_genes_all <- c(PAR1_genes,PAR2_genes)
+NPX_genes <- X_genes_all[! X_genes_all %in% PAR_genes_all]
+NPY_genes <- Y_genes_all[! Y_genes_all %in% PAR_genes_all]
+autosome_genes <- geneAnno[! geneAnno$chr %in% c("chrX","chrY"),"Gene"]
+chr21_genes <- as.character(geneAnno_21$Gene)
+
+
+#Function to make modified manhattan plots across chromosomes
+suppressPackageStartupMessages(library(qqman))
+source(file=paste0(myPath,"Scripts/Function_ASR-QQmanhattan_20221103.R"))
+DESeqManhattan_noM_col_no21 <- function(myAnnoData, mySigGenes=NULL, myTitle="Manhattan Plot", fileName="manhattan.pdf",myYlim=NULL,pngSize = c(5,5), pointsize=1,axissize = 1, labelsize=1,ylabel="Slope of regression (log2)", pdfWidth=7, pdfHeight=5, highlight_col = c("#0072B290","#D55E0090"), reg_col = c("#99999920", "#99999920")){
+  
+  #replace PAR chromosomes
+  my.chrom <- as.character(myAnnoData$chr)
+  
+  #convert chromosomes to numbers, remove M, remove 21,set X as 23, Y as 24
+    chromosomes = c(1:22)
+    for(myChr in chromosomes){
+      my.chrom <- replace(my.chrom, my.chrom==paste("chr",as.character(myChr),sep=""), myChr)
+    }
+    my.chrom <- replace(my.chrom, my.chrom=="chrX", "23")
+    my.chrom <- replace(my.chrom, my.chrom=="chrY", "24")
+    #get the dataframe ready
+    my.df <- data.frame(rownames(myAnnoData),as.numeric(my.chrom),myAnnoData$start, myAnnoData$padj, myAnnoData$log2FoldChange)
+    colnames(my.df) <- c("SNP","CHR", "BP","P","log2FC")
+    my.df <- na.omit(my.df)
+    my.df <- my.df[! my.df$CHR %in% c("chrM","21"),]
+
+  #make the manhattan plot
+  pdf(file=fileName, width=pdfWidth, height=pdfHeight)
+  
+  if(is.null(mySigGenes)){
+    ASRQQmanhattan(my.df, p="log2FC", logp=FALSE, ylab=ylabel,main=myTitle, cex=pointsize,
+                   cex.axis=axissize, col= reg_col, chrlabs=c(1:20,"22","X","Y"), cex.lab=labelsize, 
+                   myLim = myYlim)
+  } else{
+    
+    #highlight significant genes
+    sig_genes <- rownames(mySigGenes)
+    ASRQQmanhattan(my.df, p="log2FC", logp=FALSE, ylab=ylabel,main=myTitle, cex=pointsize,
+                   cex.axis=axissize, col= reg_col, colhighlight= highlight_col,
+                   chrlabs=c(1:20,"22","X","Y"), highlight = sig_genes, cex.lab=labelsize, myLim=myYlim)
+  }
+  dev.off()
+}
+
+allResults <- function(mydds,myVar,myAnno,expGenes,myalpha = 0.05, myTitle, 
+                       myYlim = c(-1,1), pdfWidth = 10,pdfHeight=7, highlight_col = c("#00000080","#A9A9A980"), bg_col = c("#00000000","#00000000")) {
+  #A function to get all of the results from DESeq2.
+  #mydds <- deseq object (name of dds object)
+  #myVar <- which variable you want to get the results for (character)
+  #myAnno <- data file for the annotated genes (geneAnno)
+  #myalpha <- adjusted p-value cutoff (numeric)
+  #myTitle <- what you want the filenames to start with for the output results (Character)
+  
+  # mydds <- dds_x_y_numeric
+  # myVar <- "x_count"
+  # myAnno <- geneAnno
+  # expGenes <- lcl_expressed
+  # myalpha = 0.05
+  # myTitle = "lcl_x_count"
+  # pdfWidth = 10
+  # pdfHeight = 5
+  # myYlim = c(-1.5,1.5)
+  
+  
+  #get results in my annotation
+  res <- results(mydds, name = myVar, alpha = myalpha)
+  res <- res[rownames(res) %in% myAnno$Gene, ]
+  summary(res) 
+  res_exp <- res[rownames(res) %in% expGenes$expressedGenes, ]
+  res_exp_ordered <- res_exp[order(res_exp$padj), ]
+  
+  #associate with annotation and write out the expressed genes
+  res_anno_exp <- na.omit(merge(x=as.data.frame(res_exp_ordered), y=geneAnno, by.x=0, by.y="Gene"))
+  rownames(res_anno_exp) <- res_anno_exp$Row.names
+  colnames(res_anno_exp)[1] <- "Gene"
+  write.table(res_anno_exp, file = paste0(myTitle, "_expressed.txt"), quote = FALSE, sep = "\t", row.names=FALSE)
+  
+  res_anno_exp_no21 <- res_anno_exp[! rownames(res_anno_exp) %in% geneAnno_21$Gene,]
+  res_anno_exp_chrX <- res_anno_exp[rownames(res_anno_exp) %in% geneAnno_x$Gene,]
+  res_anno_exp_chrY <- res_anno_exp[rownames(res_anno_exp) %in% geneAnno_y$Gene,]
+
+  res_anno_exp_auto <- res_anno_exp[rownames(res_anno_exp) %in% expGenes$expAutoGenes,]
+    write.table(res_anno_exp_auto, file = paste0(myTitle, "_auto_expressed.txt"), quote = FALSE, sep = "\t", row.names=FALSE)
+
+  
+  #write out significant list
+  res_anno_exp_sig <- res_anno_exp[res_anno_exp$padj < myalpha, ]
+  
+  res_anno_exp_sig_no21 <- res_anno_exp_no21[res_anno_exp_no21$padj < myalpha,]
+
+  res_anno_exp_sig_auto <- res_anno_exp_sig[rownames(res_anno_exp_sig) %in% expGenes$expAutoGenes,]
+  write.table(res_anno_exp_sig_auto, file = paste0(myTitle, "_p_", as.character(myalpha), "_auto.txt"),quote = FALSE,sep = "\t")
+  
+  #write out autosomal significant genes list
+  res_anno_exp_sig_auto <-res_anno_exp_sig[!res_anno_exp_sig$chr %in% c("chrX", "chrY"), ]
+  write.table(rownames(res_anno_exp_sig_auto),file = paste0(myTitle,"_p_", as.character(myalpha),"_auto_genes.txt"),
+              quote = FALSE,sep = "\t",row.names = FALSE,col.names = FALSE)
+  
+  myRowNames <- c("All_genes", "Auto_genes","All_genes_no21","ChrX_genes")
+  sigGenes <- dim(res_anno_exp_sig)[1]
+  sigGenes_up <- dim(res_anno_exp_sig[res_anno_exp_sig$log2FoldChange > 0,])[1]
+  sigGenes_down <- dim(res_anno_exp_sig[res_anno_exp_sig$log2FoldChange < 0,])[1]
+  sig_autoGenes <- dim(res_anno_exp_sig_auto)[1]
+  sig_autoGenes_up <- dim(res_anno_exp_sig_auto[res_anno_exp_sig_auto$log2FoldChange > 0,])[1]
+  sig_autoGenes_down <- dim(res_anno_exp_sig_auto[res_anno_exp_sig_auto$log2FoldChange < 0,])[1]
+  sigGenes_no21 <- dim(res_anno_exp_sig_no21)[1]
+  sigGenes_no21_up <- dim(res_anno_exp_sig_no21[res_anno_exp_sig_no21$log2FoldChange > 0 , ])[1]
+  sigGenes_no21_down <- dim(res_anno_exp_sig_no21[res_anno_exp_sig_no21$log2FoldChange < 0 , ])[1]
+  sigGenes_X <- dim(res_anno_exp_sig[res_anno_exp_sig$Gene %in% geneAnno_x$Gene,])[1]
+  sigGenes_X_up <- dim(res_anno_exp_sig[res_anno_exp_sig$Gene %in% geneAnno_x$Gene & res_anno_exp_sig$log2FoldChange>0,])[1]
+  sigGenes_X_down <- dim(res_anno_exp_sig[res_anno_exp_sig$Gene %in% geneAnno_x$Gene & res_anno_exp_sig$log2FoldChange<0,])[1]
+  
+  allGenes <- c(sigGenes, sig_autoGenes, sigGenes_no21, sigGenes_X)
+  upGenes <- c(sigGenes_up, sig_autoGenes_up, sigGenes_no21_up, sigGenes_X_up)
+  downGenes <- c(sigGenes_down, sig_autoGenes_down, sigGenes_no21_down, sigGenes_X_down)
+  myExpGenes <- c(length(expGenes$expressedGenes), length(expGenes$expAutoGenes), dim(res_anno_exp_no21)[1], dim(res_anno_exp_chrX)[1])
+  
+  results_table <- data.frame("Sig_genes" = allGenes, "Up" = upGenes, "Down" = downGenes, "Expressed" = myExpGenes)
+  row.names(results_table) <- myRowNames
+  
+  print(results_table)
+  percentGenes <- 100 * ( sigGenes / length(expGenes$expressedGenes ))
+  print(paste0("% of responsive expressed genes = ", format( round(percentGenes,2), nsmall = 2)))
+  
+  print("Top 50 significant autosome genes (by p-val):")
+  sig_auto50 <- res_anno_exp_sig_auto[1:50,]
+  sig_auto50$padj <- format(sig_auto50$padj, scientific=TRUE)
+  sig_auto50$log2FoldChange <- round(sig_auto50$log2FoldChange, 3)
+  print(sig_auto50[,c("log2FoldChange", "padj","chr")])
+  
+  print("Top 50 largest effect-size significant autosome genes:")
+  effect_order <- res_anno_exp_sig_auto[order(abs(res_anno_exp_sig_auto$log2FoldChange),decreasing = TRUE), ]
+  effect_auto50 <- effect_order[1:50,]
+  effect_auto50$padj <- format(effect_auto50$padj, scientific=TRUE)
+  effect_auto50$log2FoldChange <- round(effect_auto50$log2FoldChange, 3)
+  print(effect_auto50[,c("log2FoldChange", "padj","chr")])
+    
+    DESeqManhattan_noM_col_no21(res_anno_exp, mySigGenes = res_anno_exp_sig,
+                                myTitle=myTitle,fileName=paste0(myTitle,"_p_",as.character(myalpha),"_manhattan_auto_noYlim.pdf"),
+                                pointsize = 0.5, ylabel = "Slope of regression (log2)", pdfWidth = pdfWidth, 
+                                pdfHeight = pdfHeight, highlight_col = highlight_col, reg_col = bg_col)
+    DESeqManhattan_noM_col_no21(res_anno_exp, mySigGenes = res_anno_exp_sig,
+                                myTitle=myTitle,fileName=paste0(myTitle,"_p_",as.character(myalpha),"_manhattan_auto_Ylim.pdf"),
+                                pointsize = 0.35,axissize = 0.5, labelsize = 0.5, ylabel = "Slope of regression (log2)", myYlim = myYlim,pdfWidth = pdfWidth, 
+                                pdfHeight = pdfHeight , highlight_col = highlight_col, reg_col = bg_col)
+
+  normalized_counts <- counts(mydds,normalized=TRUE)
+  write.table(normalized_counts,file = paste0(myTitle,"_normcounts.txt"),
+              quote = FALSE,sep = "\t",row.names = TRUE,col.names = TRUE)
+  
+  log_norm_counts <- log2(counts(mydds,normalized=TRUE)+1)
+  
+  myList <- list("res_anno_exp" = res_anno_exp, "res_anno_exp_auto" = res_anno_exp_auto, "res_anno_exp_sig" = res_anno_exp_sig,
+                 "res_anno_exp_sig_auto" = res_anno_exp_sig_auto, "norm_counts" = 
+                   normalized_counts, "log_norm_counts" = log_norm_counts)
+  return(myList)
+}
+
+  
+data_summary <- function(x){
+  m <- median(x, na.rm=TRUE)
+  ymin <- quantile(x, na.rm=TRUE)[2]
+  ymax <- quantile(x, na.rm=TRUE)[4]
+  test <- c("y"=m,"ymin"=ymin,"ymax"=ymax)
+  names(test) <- c("y","ymin","ymax")
+  return(test)
+}
+
+```
+
+#Bring in metadata
+```{r}
+#read in the metadata table
+metadata <-read.delim(paste0(myPath,"Linear_regressions/metadata.txt"), stringsAsFactors = FALSE)
+
+#restrict to cell type and karyotype
+metadata_lcl_t21 <- metadata[metadata$karyotype %in% c("XX","XY","XX_t21","XY_t21") & metadata$cell_type == "LCL" & metadata$Technical_replicate == "N",]
+rownames(metadata_lcl_t21) <- metadata_lcl_t21$sample
+# write.table(metadata_lcl_t21, file="metadata_lcl_trisomy21.txt",quote=FALSE, col.names = TRUE, sep="\t", row.names=FALSE)
+```
+
+##Processing raw RNA-seq data
+```{r, eval=FALSE}
+### The following code is used to run this analysis from the raw data. Skip below to begin with provided processed data file. ###
+## You must obtain access to the raw data through dbGaP (accession # phs002481). Download the fastq files, and run kallisto using the following command:
+# kallisto quant -i KALLISTO_INDEX_FILE -t 16 --bias --plaintext -o  /kallisto_OUTPUT_FOLDER/sampleName/ file1fastq.gz file2fastq.gz
+
+# #Bring in list of Kallisto output files
+# myFileTable <- #PATH TO RNAseq FILES
+# myFiles <- myFileTable$V2
+# names(myFiles) <- rownames(myFileTable)
+
+# subset file list for the samples I will use in this analysis
+# myFiles_lcl_t21 <- myFiles[metadata_lcl_t21$sample]
+# 
+# 
+# #run tximport to bring in mapped samples
+# suppressPackageStartupMessages(library("tximport"))
+# 
+# annofile <-read.delim(file=paste0(myPath,"Annotations/annotation_with_ERCC.txt"),sep = " ")
+# tx2gene <-data.frame("TXNAME" = annofile$transcript_id,"GENEID" = annofile$gene_name)
+# 
+# txi_lcl_t21 <- tximport(myFiles_lcl_t21, type = "kallisto", tx2gene = tx2gene)
+# save(txi_lcl_t21, file=paste0(myPath,"Trisomy_21_analysis/txi_lcl_t21.rda"))
+load(file=paste0(myPath,"Trisomy_21_analysis/txi_lcl_t21.rda"))
+write.table(x=txi_lcl_t21$counts, file="txi_lcl_t21_counts.txt", sep="\t", quote=FALSE, row.names = TRUE, col.names = TRUE)
+write.table(x=txi_lcl_t21$abundance, file="txi_lcl_t21_TPM.txt", sep="\t", quote=FALSE, row.names = TRUE, col.names = TRUE)
+
+#Adjust sample tables to match list of samples in txi
+sample_table_lcl_t21 <- metadata_lcl_t21[colnames(txi_lcl_t21$counts), c("Chr21_count","sex","batch_libprep")]
+```
+
+#Load processed data ao linear regressions with DESEQ2
+```{r}
+t21_counts <- read.delim(file=paste0(myPath,"Trisomy_21_analysis/txi_lcl_t21_counts.txt"), check.names = FALSE)
+sample_table_lcl_t21 <- metadata_lcl_t21[colnames(t21_counts), c("Chr21_count","sex","batch_libprep")]
+
+load(file=paste0(myPath,"Linear_regressions/LCLs/lcl_expressed.rda"))
+
+### THIS CODE CHUNK TAKES A LITTLE LONGER TO RUN. RUN IT ONCE AND THEN COMMENT OUT THE CODE AND LOAD FROM THE R DATA FILES.
+#once you run this and save, you can save time by just loading the file using the code below:
+# dds_t21_lcl <- DESeqDataSetFromMatrix(round(t21_counts), colData = sample_table_lcl_t21, design = ~ batch_libprep + sex + Chr21_count)
+# dds_t21_lcl <- DESeq(dds_t21_lcl)
+# save(dds_t21_lcl, file=paste0(myPath,"Trisomy_21_analysis/dds_t21_lcl.rda"))
+load(file=paste0(myPath,"Trisomy_21_analysis/dds_t21_lcl.rda"))
+
+library(limma)
+
+#For plotting, we will use the normalized counts corrected for the other covariates.
+vst_dds_t21_lcl <- vst(dds_t21_lcl, blind=FALSE)
+
+#control for batch and sex
+vst_dds_t21_lcl_batch_sex <- vst_dds_t21_lcl
+design0 <- model.matrix(~sample_table_lcl_t21$Chr21_count)
+assay(vst_dds_t21_lcl_batch_sex) <- removeBatchEffect(x = assay(vst_dds_t21_lcl_batch_sex), batch = sample_table_lcl_t21$batch_libprep, batch2 = sample_table_lcl_t21$sex, design=design0)
+```
+
+##DESeq regression results
+```{r}
+chr21_lcl_results <- allResults(mydds = dds_t21_lcl, myVar = "Chr21_count", myAnno = geneAnno, expGenes= lcl_expressed, myTitle = "lcl_chr21_count", myalpha = 0.05, pdfWidth = 5.6, pdfHeight = 3, myYlim = c(-6.5,4.2), highlight_col = c("#d6419690","#edabd090"), bg_col=c("#D3D3D340","#D3D3D340"))
+```
+
+## Put together all the results for supplemental table
+```{r}
+#rearrange so "Gene" now refers to ensembl 107 names.
+lcl_t21_results_mod <- chr21_lcl_results$res_anno_exp[,c("gene_name.107","baseMean","log2FoldChange","lfcSE","stat","pvalue","padj","chr","start" ,
+                                                         "stop","gene_id.107","gene_type.107","Gene","gene_id.84","gene_type.84"  )]
+rownames(lcl_t21_results_mod) <- lcl_t21_results_mod$gene_name.107
+colnames(lcl_t21_results_mod) <- c("Gene","baseMean","log2FoldChange","lfcSE","stat","pvalue","padj","chr","start" ,
+                                                         "stop","gene_id.107","gene_type.107","gene_name.84","gene_id.84","gene_type.84"  )
+lcl_t21_results_mod_no21 <- lcl_t21_results_mod[! lcl_t21_results_mod$chr == "chr21",]
+lcl_t21_results_mod_no21_order <- lcl_t21_results_mod_no21[order(lcl_t21_results_mod_no21$padj, decreasing = FALSE),]
+
+write.table(x = lcl_t21_results_mod_no21_order, file=paste0(myPath,"Trisomy_21_analysis/lcl_t21_auto_no21_expressed.txt"), quote=FALSE, row.names = FALSE, col.names = TRUE, sep="\t")
+```
+
+# Plotting individual genes
+```{r}
+chr21_col_light <- "#ff99e6"
+chr21_col <- "#ff1ac6"
+myOrange <- "#d95f0290"
+myPurple <- "#7570B390"
+
+library(ggplot2)
+
+ggGenePlot_Chr21count <- function(Gene, normCounts, metadata, resTable, prefix, adjustLabel, ymax=10, ymin=0){
+  
+  mySlope_print <- formatC(x=resTable[resTable$Gene == Gene,"log2FoldChange"], digits=2)
+  myP <- formatC(x=resTable[resTable$Gene == Gene,"padj"], digits=2, format = "e")
+  expn <- normCounts[Gene,]
+
+  #merge Gene data with metadata
+  plot_data <- data.frame(metadata,expn)
+  if(adjustLabel == "bottomLeft"){
+    yloc <- ymin
+    xloc <-1.7
+    myV <- 0
+    myH <- 0
+  } 
+  if(adjustLabel == "bottomRight"){
+    yloc <- ymin
+    xloc <- 3.3
+    myV <- 0
+    myH <- 1
+  }
+  if(adjustLabel == "topLeft"){
+    yloc <- ymax
+    xloc <- 1.7
+    myV <- 1
+    myH <- 0
+  }
+  if(adjustLabel == "topRight"){
+    yloc <- ymax
+    xloc <- 3.3
+    myV <- 1
+    myH <- 1
+  }
+  pdf(file=paste0(prefix,"_",Gene,"_Plot.pdf"), width=1.5, height=1.5)
+  p <- ggplot(data=plot_data, mapping = aes(x=Chr21_count, y=expn)) +
+    geom_jitter(color="#00000080", position=position_jitter(0.2), size=1, stroke=0) +    geom_smooth(method = "lm", color=chr21_col, size=0.25, fill=chr21_col_light, fullrange=TRUE) +
+    annotate(
+      geom = "text", 
+      x = xloc, 
+      y = yloc,
+      label = paste0('log2FC per Chr 21 = ', mySlope_print, '\nFDR = ', myP),      hjust = myH, 
+      vjust = myV,
+      size=2
+      ) +
+    labs( 
+      x= "Chr 21 copy number",
+      y= "log2(normalized counts)",
+      title = Gene
+      ) +
+    theme_classic(base_size = 8) +
+    theme(
+      plot.title = ggtext::element_markdown(hjust = 0.5, face = "italic"),
+      axis.text = element_text(color = "black"), 
+      axis.ticks = element_line(color = "black", size = 0.25), 
+      axis.line = element_line(size = 0.25),
+      aspect.ratio=1, 
+      ) +
+    ylim(ymin,ymax) + xlim(1.7,3.3)
+  print(p)
+  dev.off()
+}
+
+ggGenePlot_Chr21count(Gene = "ZNF439", normCounts = chr21_lcl_results$norm_counts, metadata = sample_table_lcl_t21, resTable = chr21_lcl_results$res_anno_exp, prefix = "Chr21", adjustLabel = "topLeft", ymin=-100, ymax=600)
+
+ggGenePlot_Chr21count(Gene = "TEP1", normCounts = chr21_lcl_results$norm_counts, metadata = sample_table_lcl_t21, resTable = chr21_lcl_results$res_anno_exp, prefix = "Chr21", adjustLabel = "topLeft", ymin=1000, ymax=4500)
+```
+
+#Compare trisomy 21 fold changes to X and Y regressions and do venn diagram
+```{r}
+#get exp auto genes without Chr 21
+exp_auto_no21 <- setdiff(lcl_expressed$expAutoGenes, geneAnno_21$Gene)
+
+#venn diagram overlap
+lcl_x_y_res <- read.delim(file=paste0(myPath,"Linear_regressions/lcl_fib_XandY_results_auto_expressed.txt"), stringsAsFactors = FALSE)
+
+#autosomes, remove chr21 genes in the overlap!
+x_y_sig_no21 <- lcl_x_y_res[(! lcl_x_y_res$chr == "chr21") & (! is.na(lcl_x_y_res$lcl_padj_X)) & lcl_x_y_res$lcl_padj_X < 0.05 & (! is.na(lcl_x_y_res$lcl_padj_Y)) & lcl_x_y_res$lcl_padj_Y < 0.05,]
+x_y_sig_no21$avg_log2FC_X_Y <- (x_y_sig_no21$lcl_log2FC_X + x_y_sig_no21$lcl_log2FC_Y) / 2
+
+#autosomes, remove chr21 genes in the overlap!
+lcl_x_y_res_no21_xsig <- lcl_x_y_res[(! lcl_x_y_res$chr == "chr21") & (! is.na(lcl_x_y_res$lcl_padj_X)) & lcl_x_y_res$lcl_padj_X < 0.05,]
+rownames(lcl_x_y_res_no21_xsig) <- lcl_x_y_res_no21_xsig$Gene
+lcl_x_y_res_no21_ysig <- lcl_x_y_res[(! lcl_x_y_res$chr == "chr21") & (! is.na(lcl_x_y_res$lcl_padj_Y)) & lcl_x_y_res$lcl_padj_Y < 0.05,]
+rownames(lcl_x_y_res_no21_ysig) <- lcl_x_y_res_no21_ysig$Gene
+
+lcl_chr21_res_no21_sig <- chr21_lcl_results$res_anno_exp_sig_auto[! chr21_lcl_results$res_anno_exp_sig_auto$chr == "chr21",]
+
+lcl_chr21_res_no21<- chr21_lcl_results$res_anno_exp_auto[! chr21_lcl_results$res_anno_exp_auto$chr == "chr21",]
+
+twoGroupVenn_geneNames(setA = x_y_sig_no21$Gene, setAname = "X&Y-responsive", setB = lcl_chr21_res_no21_sig$Gene, setBname = "Chr21-responsive", expGenes = exp_auto_no21, filename = "LCL_XandY_Chr21_Venn.pdf")
+
+#plot the X and Y overlap
+myData <- data.frame("y" = x_y_sig_no21[,"avg_log2FC_X_Y"], "x"= lcl_chr21_res_no21[x_y_sig_no21$Gene.y, "log2FoldChange"])
+paper2_corrPlot_deming_Large(myData = myData, myTitle = "X_and_Y_overlap_corrPlot_withChr21.pdf", myWidth = 1.5, myHeight = 1.5, myXlab = "log2FC per Chr 21", myYlab = "Avg. log2FC per Chr X or Y", demingBehind = TRUE,seq_num = 0.1)
+
+
+#Violin plot comparing absolute values of significantly responsive genes.
+mylist <- list("Chr21_responsive" = data.frame("log2FC" = abs(lcl_chr21_res_no21_sig$log2FoldChange)), "X_responsive" = data.frame("log2FC" = abs(lcl_x_y_res_no21_xsig$lcl_log2FC_X)), "Y_responsive" = data.frame( "log2FC" = abs(lcl_x_y_res_no21_ysig$lcl_log2FC_Y)))
+
+myList_melt <- melt(mylist)
+myList_melt$L1 <- factor(x=myList_melt$L1, levels = c("Chr21_responsive","X_responsive","Y_responsive"))
+
+pdf(file="Chr21_X_Y_violin_plots.pdf", height=1.5, width=1.5)
+ggplot(data=myList_melt, mapping = aes(x=L1, y=value, fill=L1)) + 
+   geom_violin(col="#00000000",scale = "width",) +
+   stat_summary(fun.data=data_summary, size=0.25) +
+    scale_fill_manual(values = c(chr21_col,myOrange,myPurple)) +
+theme_classic(base_size = 8) + 
+  theme(
+      axis.text = element_text(color = "black"), 
+      axis.ticks = element_line(color = "black", size = 0.25), 
+      axis.line = element_line(size = 0.25),
+      plot.title = element_text(hjust = 0.5),
+      axis.text.x = element_text(hjust = 0.5),
+      legend.position = "none",
+      ) +
+  labs(
+    title="LCLs",
+    y="log2FC"
+  ) + ylim(c(0,2))
+dev.off()
+
+wilcox.test(x=myList_melt[myList_melt$L1 == "Chr21_responsive","value"], y=myList_melt[myList_melt$L1 == "X_responsive","value"])
+wilcox.test(x=myList_melt[myList_melt$L1 == "Chr21_responsive","value"], y=myList_melt[myList_melt$L1 == "Y_responsive","value"])
+
+```
+
+#All genes X vs 21; Y vs 21
+```{r}
+#plot all exp autosomal genes chr21 vs chrX response
+myData_X <- data.frame("x" = lcl_chr21_res_no21[lcl_x_y_res_no21$Gene, "log2FoldChange"], "y"=lcl_x_y_res_no21[,"lcl_log2FC_X"])
+
+paper2_corrPlot_deming_Large_unequal(myData = myData_X, myTitle = "LCL_X_21_allExp_corPlots_deming.pdf", myWidth = 2.4, myHeight = 1.5, myYlab = "Log2FC per Chr X", myXlab = "Log2FC per Chr 21", demingBehind = TRUE, myXlim = c(-6.3,4), myYlim = c(-2.8, 1.8), myPlotTitle = "Expressed autosomal genes, Deming regression including error, LCLs")
+
+
+#Y
+#plot all exp autosomal genes chr21 vs chrY response
+myData_Y <- data.frame("x" = lcl_chr21_res_no21[lcl_x_y_res_no21$Gene, "log2FoldChange"], "x_err" = lcl_chr21_res_no21[lcl_x_y_res_no21$Gene, "lfcSE"], "y"=lcl_x_y_res_no21[,"lcl_log2FC_Y"],"y_err" = lcl_x_y_res_no21[,"lcl_lfcSE_Y"])
+
+paper2_corrPlot_deming_Large_unequal(myData = myData_Y, myTitle = "LCL_Y_21_allExp_corPlots_deming.pdf", myWidth = 2.4, myHeight = 1.5, myYlab = "Log2FC per Chr Y", myXlab = "Log2FC per Chr 21", demingBehind = TRUE, myXlim = c(-6.3,4), myYlim = c(-2.8, 1.8), myPlotTitle = "Expressed autosomal genes, Deming regression including error, LCLs")
+``` 
+
+
+#X genes only expressed from Xa genes Compare trisomy 21 fold changes to X and Y regressions and do venn diagram
+```{r}
+AR_values <- read.delim(file=paste0(myPath,"Annotations/all_AR_annotation_20230530.txt"))
+rownames(AR_values) <- AR_values$gene_name.84
+
+AR_values_subject <- AR_values[AR_values$Final_XCI_Call %in% c("Subject"),]
+AR_values_subject_lcl <- intersect(lcl_expressed$expressedGenes, AR_values_subject$gene_name.84)
+
+#Bring in the Xa expressed regression results sig genes
+lcl_x_results <- na.omit(read.delim(file=paste0(myPath,"Linear_regressions/LCLs/lcl_x_count_expressed.txt"), stringsAsFactors = FALSE))
+lcl_x_results_ChrXa <- lcl_x_results[lcl_x_results$Gene %in% AR_values_subject$gene_name.84,]
+lcl_x_results_ChrXa_sig <- lcl_x_results_ChrXa[lcl_x_results_ChrXa$padj < 0.05,]
+
+lcl_y_results <- na.omit(read.delim(file=paste0(myPath,"Linear_regressions/LCLs/lcl_y_count_expressed.txt"), stringsAsFactors = FALSE))
+lcl_y_results_ChrXa <- lcl_y_results[lcl_y_results$Gene %in% AR_values_subject$gene_name.84,]
+lcl_y_results_ChrXa_sig <- lcl_y_results_ChrXa[lcl_y_results_ChrXa$padj < 0.05,]
+
+chr21_regression_ChrXa <- chr21_lcl_results$res_anno_exp[chr21_lcl_results$res_anno_exp$Gene %in% AR_values_subject$gene_name.84,]
+chr21_regression_ChrXa_sig <- chr21_regression_ChrXa[chr21_regression_ChrXa$padj < 0.05,]
+
+threeGroupVenn_geneNames(setA = lcl_x_results_ChrXa_sig$Gene, setAname = "X sig", setB = lcl_y_results_ChrXa_sig$Gene, setBname = "Y sig", setC = chr21_regression_ChrXa_sig$Gene, setCname = "Chr21-responsive", expGenes = AR_values_subject_lcl, filename = "LCL_Xa_X_Y_Chr21_Venn.pdf")
+``` 
