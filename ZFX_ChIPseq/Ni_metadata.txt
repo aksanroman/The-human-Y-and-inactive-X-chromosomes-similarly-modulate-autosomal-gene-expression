@@ -1,0 +1,25 @@
+Run	BioSample	Cell_Line	source_name	clone_name	Genotype	grna	Condition	Clone
+SRR11072751	SAMN14088077	kidney cell line HEK293T	"HEK293T\, Control"	EGV	EGV	EGV	Control	clone_EGV
+SRR11072753	SAMN14088076	kidney cell line HEK293T	"HEK293T\, Control"	EGV	EGV	EGV	Control	clone_EGV
+SRR11072755	SAMN14088075	kidney cell line HEK293T	"HEK293T\, Control"	EGV	EGV	EGV	Control	clone_EGV
+SRR11072757	SAMN14088074	kidney cell line HEK293T	"HEK293T\, ZFX single KO - clone1"	ZFX KO #48	ZFX single KO	"ZFX KO: g1, g2"	ZFX_ko	clone_48
+SRR11072759	SAMN14088073	kidney cell line HEK293T	"HEK293T\, ZFX single KO - clone1"	ZFX KO #48	ZFX single KO	"ZFX KO: g1, g2"	ZFX_ko	clone_48
+SRR11072761	SAMN14088072	kidney cell line HEK293T	"HEK293T\, ZFX single KO - clone1"	ZFX KO #48	ZFX single KO	"ZFX KO: g1, g2"	ZFX_ko	clone_48
+SRR11072763	SAMN14088071	kidney cell line HEK293T	"HEK293T\, ZFX single KO - clone2"	ZFX KO #58	ZFX single KO	"ZFX KO: g1, g2"	ZFX_ko	clone_58
+SRR11072765	SAMN14088070	kidney cell line HEK293T	"HEK293T\, ZFX single KO - clone2"	ZFX KO #58	ZFX single KO	"ZFX KO: g1, g2"	ZFX_ko	clone_58
+SRR11072767	SAMN14088069	kidney cell line HEK293T	"HEK293T\, ZFX single KO - clone2"	ZFX KO #58	ZFX single KO	"ZFX KO: g1, g2"	ZFX_ko	clone_58
+SRR11072769	SAMN14088067	kidney cell line HEK293T	"HEK293T\, ZNF711 single KO - clone 1"	ZNF711 KO #4	ZNF711 single KO	"ZNF711 KO: g1,g2"	ZNF711_ko	clone_4
+SRR11072771	SAMN14088066	kidney cell line HEK293T	"HEK293T\, ZNF711 single KO - clone 1"	ZNF711 KO #4	ZNF711 single KO	"ZNF711 KO: g1,g2"	ZNF711_ko	clone_4
+SRR11072773	SAMN14088065	kidney cell line HEK293T	"HEK293T\, ZNF711 single KO - clone 1"	ZNF711 KO #4	ZNF711 single KO	"ZNF711 KO: g1,g2"	ZNF711_ko	clone_4
+SRR11072775	SAMN14088064	kidney cell line HEK293T	"HEK293T\, ZNF711 single KO - clone 2"	ZNF711 KO #10	ZNF711 single KO	"ZNF711 KO: g2,g3"	ZNF711_ko	clone_10
+SRR11072777	SAMN14088063	kidney cell line HEK293T	"HEK293T\, ZNF711 single KO - clone 2"	ZNF711 KO #10	ZNF711 single KO	"ZNF711 KO: g2,g3"	ZNF711_ko	clone_10
+SRR11072779	SAMN14088062	kidney cell line HEK293T	"HEK293T\, ZNF711 single KO - clone 2"	ZNF711 KO #10	ZNF711 single KO	"ZNF711 KO: g2,g3"	ZNF711_ko	clone_10
+SRR11072781	SAMN14088068	kidney cell line HEK293T	"HEK293T\, ZFX and ZNF711 DKO - clone1"	DKO #Seven	ZFX and ZNF711 DKO	"ZFX KO: g1, g2; ZNF711 KO: g1,g2"	DKO	clone_7
+SRR11072782	SAMN14088061	kidney cell line HEK293T	"HEK293T\, ZFX and ZNF711 DKO - clone1"	DKO #Seven	ZFX and ZNF711 DKO	"ZFX KO: g1, g2; ZNF711 KO: g1,g2"	DKO	clone_7
+SRR11072783	SAMN14088060	kidney cell line HEK293T	"HEK293T\, ZFX and ZNF711 DKO - clone1"	DKO #Seven	ZFX and ZNF711 DKO	"ZFX KO: g1, g2; ZNF711 KO: g1,g2"	DKO	clone_7
+SRR11072784	SAMN14088059	kidney cell line HEK293T	"HEK293T\, ZFX and ZNF711 DKO - clone 2"	DKO #Jake	ZFX and ZNF711 DKO	"ZFX KO: g1, g2; ZNF711 KO: g1,g2"	DKO	clone_Jake
+SRR11072785	SAMN14088058	kidney cell line HEK293T	"HEK293T\, ZFX and ZNF711 DKO - clone 2"	DKO #Jake	ZFX and ZNF711 DKO	"ZFX KO: g1, g2; ZNF711 KO: g1,g2"	DKO	clone_Jake
+SRR11072786	SAMN14088057	kidney cell line HEK293T	"HEK293T\, ZFX and ZNF711 DKO - clone 2"	DKO #Jake	ZFX and ZNF711 DKO	"ZFX KO: g1, g2; ZNF711 KO: g1,g2"	DKO	clone_Jake
+SRR11072787	SAMN14088056	kidney cell line HEK293T	"HEK293T\, ZFX and ZNF711 DKO - clone 3"	DKO #Lady	ZFX and ZNF711 DKO	"ZFX KO: g1, g2; ZNF711 KO: g1,g2"	DKO	clone_lady
+SRR11072788	SAMN14088051	kidney cell line HEK293T	"HEK293T\, ZFX and ZNF711 DKO - clone 3"	DKO #Lady	ZFX and ZNF711 DKO	"ZFX KO: g1, g2; ZNF711 KO: g1,g2"	DKO	clone_lady
+SRR11072789	SAMN14088049	kidney cell line HEK293T	"HEK293T\, ZFX and ZNF711 DKO - clone 3"	DKO #Lady	ZFX and ZNF711 DKO	"ZFX KO: g1, g2; ZNF711 KO: g1,g2"	DKO	clone_lady
