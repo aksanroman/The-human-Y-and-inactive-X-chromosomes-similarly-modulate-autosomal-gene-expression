@@ -1034,7 +1034,7 @@ pdf(file="XY_ZFXonly_ZFYonly_Autosomes.pdf", height = 3, width = 3)
       geom = "text",
       x = 0.1, #top left
       y = -1.1,
-      label = paste0('X & Y: r = ', formatC(myCor_pear_XY$estimate ,digits = 2,format = "f"), ", P = ", formatC(myCor_pear_XY$p.value, digits=2,format = "e")), hjust = 0,
+      label = paste0('ZFX & ZFY: r = ', formatC(myCor_pear_XY$estimate ,digits = 2,format = "f"), ", P = ", formatC(myCor_pear_XY$p.value, digits=2,format = "e")), hjust = 0,
       vjust = 1,
       size=4,
       col="black"
@@ -1043,7 +1043,7 @@ pdf(file="XY_ZFXonly_ZFYonly_Autosomes.pdf", height = 3, width = 3)
       geom = "text",
       x = 0.1, #top left
       y = -1.3,
-      label = paste0('X only: r = ', formatC(myCor_pear_Xonly$estimate ,digits = 2,format = "f"), ", P = ", formatC(myCor_pear_Xonly$p.value, digits=2,format = "e")), hjust = 0,
+      label = paste0('ZFX only: r = ', formatC(myCor_pear_Xonly$estimate ,digits = 2,format = "f"), ", P = ", formatC(myCor_pear_Xonly$p.value, digits=2,format = "e")), hjust = 0,
       vjust = 1,
       size=4,
       col="#ff9933"
@@ -1052,7 +1052,7 @@ pdf(file="XY_ZFXonly_ZFYonly_Autosomes.pdf", height = 3, width = 3)
       geom = "text",
       x = 0.1, #top left
       y = -1.5,
-      label = paste0('Y only: r = ', formatC(myCor_pear_Yonly$estimate ,digits = 2,format = "f"), ", P = ", formatC(myCor_pear_Yonly$p.value, digits=2,format = "e")), hjust = 0,
+      label = paste0('ZFY only: r = ', formatC(myCor_pear_Yonly$estimate ,digits = 2,format = "f"), ", P = ", formatC(myCor_pear_Yonly$p.value, digits=2,format = "e")), hjust = 0,
       vjust = 1,
       size=4,
       col="#9966ff"
