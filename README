@@ -14,4 +14,4 @@ GO_analysis: Fig. S1, S22
 Saturation_analysis: Fig. S4
 Hormone_analysis: Fig. S5; Table S3
 Motif_analysis: Table S8, S12
-ZFX_ChIPseq: Table S9
+ZFX_ChIPseq: Fig. S16, S17, S18; Table S9
