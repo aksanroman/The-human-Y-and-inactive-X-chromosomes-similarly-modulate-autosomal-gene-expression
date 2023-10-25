@@ -1,0 +1,147 @@
+---
+title: "ZFX direct target genes"
+output: html_notebook
+---
+
+#Setup
+```{r}
+myPath <-  #ADD PATH TO GITHUB FOLDER
+
+# #Bring in functions!
+source(file=paste0(myPath,"Scripts/Function_ASR-QQmanhattan_20221103.R"))
+source(file=paste0(myPath,"Scripts/Function_DESeqManhattan_noM_col_20221108.R"))
+source(file=paste0(myPath,"Scripts/Function_deseqFactorAnalysis_20221103.R"))
+source(file=paste0(myPath,"Scripts/Function_makeSymmetric_X_Y_20221103.R"))
+source(file=paste0(myPath,"Scripts/Function_makeSymmetric_20221103.R"))
+
+
+#Set up sex chromosome gene lists, using gencode v84 as "Gene" list
+#This gene annotation includes protein coding genes and lncRNAs
+geneAnno <- na.omit(read.delim(file=paste0(myPath,"Annotations/geneAnno_proteinCoding_lncRNA_v107_20230426.txt"), stringsAsFactors = FALSE))
+#Main "Gene" name will be ensembl84
+colnames(geneAnno)[c(2,4:6)] <- c("Gene","chr","start","stop")
+#Only include genes in both v84 and v107
+geneAnno <- geneAnno[! is.na(geneAnno$Gene),]
+geneAnno <- geneAnno[! duplicated(geneAnno$gene_name.107) & ! geneAnno$gene_name.107 %in% c("") & ! duplicated(geneAnno$Gene),]
+geneAnno_x <- geneAnno[geneAnno$chr == "chrX",]
+geneAnno_y <- geneAnno[geneAnno$chr == "chrY",]
+X_genes_all <-as.character(geneAnno_x$Gene)
+Y_genes_all <-as.character(geneAnno_y$Gene)
+sexChrom_genes <- c(X_genes_all,Y_genes_all)
+PAR1_genes <- geneAnno_x[geneAnno_x$start < 2691188,]$Gene
+PAR2_genes <- c("SPRY3","VAMP7","IL9R","WASH6P")
+PAR_genes_all <- c(PAR1_genes,PAR2_genes)
+NPX_genes <- X_genes_all[! X_genes_all %in% PAR_genes_all]
+NPY_genes <- Y_genes_all[! Y_genes_all %in% PAR_genes_all]
+autosome_genes <- geneAnno[! geneAnno$chr %in% c("chrX","chrY"),"Gene"]
+
+#Bring in exp genes
+c42b_exp <- read.delim(file="c42b_expressed.txt", stringsAsFactors = FALSE)[,1]
+mcf7_exp <- read.delim(file="mcf7_expressed.txt", stringsAsFactors = FALSE)$gene_name.107
+mcf7_exp <- geneAnno[geneAnno$gene_name.107 %in% mcf7_exp,"Gene"]
+hek_exp <- read.delim(file="hek293t_expressed.txt", stringsAsFactors = FALSE)$gene_name.107
+hek_exp <- geneAnno[geneAnno$gene_name.107 %in% hek_exp,"Gene"]
+
+#Bring in chip-seq targets
+chip_targets <- read.delim(file="binary_ZFX_binding_withExpn.txt", stringsAsFactors = FALSE)
+chip_targets_c42b <- rownames(chip_targets[chip_targets$c42b %in% c(1),])
+chip_targets_mcf7 <- rownames(chip_targets[chip_targets$mcf7 %in% c(1),])
+chip_targets_hek <- rownames(chip_targets[chip_targets$hek293t %in% c(1),])
+```
+
+#Rhie et al first
+## do tximport
+```{r}
+#rhie_metadata
+rhie_metadata <- read.delim(file="rhie_c42b_mcf7_metadata.txt", stringsAsFactors = FALSE)
+rhie_metadata_c42b <- rhie_metadata[rhie_metadata$Cell_Line == "C42B",]
+rhie_metadata_mcf7 <- rhie_metadata[rhie_metadata$Cell_Line == "MCF7",]
+
+library(tximport)
+annofile <-read.delim(file=paste0(myPath,"Annotations/annotation_with_ERCC.txt"),sep = " ")
+tx2gene <-data.frame("TXNAME" = annofile$transcript_id,"GENEID" = annofile$gene_name)
+
+c42b_files <- #Download raw files and pseudomap with kallisto.
+names(c42b_files) <- rhie_metadata_c42b$SampleID
+txi_c42b <- tximport(c42b_files, type = "kallisto", tx2gene = tx2gene)
+save(txi_c42b,file="txi_c42b.rda")
+load(file="txi_c42b.rda")
+
+mcf7_files <- #Download raw files and pseudomap with kallisto.
+names(mcf7_files) <- rhie_metadata_mcf7$SampleID
+txi_mcf7 <- tximport(mcf7_files, type = "kallisto", tx2gene = tx2gene)
+save(txi_mcf7,file="txi_mcf7.rda")
+load(file="txi_mcf7.rda")
+```
+
+## deseq2
+```{r}
+dds_c42b <- DESeqDataSetFromTximport(txi = txi_c42b, colData = rhie_metadata_c42b, design = ~ Condition)
+dds_c42b <- DESeq(dds_c42b)
+save(dds_c42b, file="dds_c42b.rda")
+load("dds_c42b.rda")
+
+myList <- matrix(c("ZFXkd","Control"),ncol=2, byrow = TRUE)
+deseqFactorAnalysis(deseqObject = dds_c42b, myVariable = "Condition", comparisonList = myList, expressedGeneList = c42b_exp, p_value=0.05, myTitle = "C42B")
+
+
+dds_mcf7 <- DESeqDataSetFromTximport(txi = txi_mcf7, colData = rhie_metadata_mcf7, design = ~ Condition)
+dds_mcf7 <- DESeq(dds_mcf7)
+save(dds_mcf7, file="dds_mcf7.rda")
+load("dds_mcf7.rda")
+
+myList <- matrix(c("ZFXkd","Control"),ncol=2, byrow = TRUE)
+deseqFactorAnalysis(deseqObject = dds_mcf7, myVariable = "Condition", comparisonList = myList, expressedGeneList = mcf7_exp, p_value=0.05, myTitle = "MCF7")
+```
+
+## get direct targets
+```{r}
+c42b_results <- read.delim(file="C42B_ZFXkdvsControl_DESeq_expressed.txt", stringsAsFactors = FALSE)
+c42b_results_sig <- c42b_results[! is.na(c42b_results$padj) & c42b_results$padj < 0.05,]
+c42b_results_direct_targets <- c42b_results_sig[c42b_results_sig$Gene %in% chip_targets_c42b,]
+write.table(c42b_results_direct_targets, file="c42b_direct_targets.txt", quote=FALSE, sep="\t", row.names=FALSE, col.names=TRUE)
+
+mcf7_results <- read.delim(file="MCF7_ZFXkdvsControl_DESeq_expressed.txt", stringsAsFactors = FALSE)
+mcf7_results_sig <- mcf7_results[! is.na(mcf7_results$padj) & mcf7_results$padj < 0.05,]
+mcf7_results_direct_targets <- mcf7_results_sig[mcf7_results_sig$Gene %in% chip_targets_mcf7,]
+write.table(mcf7_results_direct_targets, file="mcf7_direct_targets.txt", quote=FALSE, sep="\t", row.names=FALSE, col.names=TRUE)
+```
+
+# Ni et al second
+## do tximport
+```{r}
+ni_metadata <- read.delim(file="Ni_metadata.txt", stringsAsFactors = FALSE)
+Ni_files <- #Download raw files and pseudomap with kallisto.
+names(Ni_files) <- ni_metadata$BioSample
+
+txi_Ni <- tximport(Ni_files, type = "kallisto", tx2gene = tx2gene)
+save(txi_Ni, file = "txi_Ni.rda")
+
+load("txi_Ni.rda")
+
+#Restrict to the samples we need!
+ni_metadata_restricted<- ni_metadata[ni_metadata$Condition %in% c("Control","ZFX_ko"),]
+
+txi_Ni$abundance <- txi_Ni$abundance[ , ni_metadata_restricted$BioSample]
+txi_Ni$counts <- txi_Ni$counts[ , ni_metadata_restricted$BioSample]
+txi_Ni$length <- txi_Ni$length[ , ni_metadata_restricted$BioSample]
+```
+
+## deseq2
+```{r}
+dds_hek <- DESeqDataSetFromTximport(txi = txi_Ni, colData = ni_metadata_restricted, design = ~ Condition)
+dds_hek <- DESeq(dds_hek)
+save(dds_hek, file="dds_hek.rda")
+# load("dds_hek.rda")
+
+myList <- matrix(c("ZFX_ko","Control"),ncol=2, byrow = TRUE)
+deseqFactorAnalysis(deseqObject = dds_hek, myVariable = "Condition", comparisonList = myList, expressedGeneList = hek_exp, p_value=0.05, myTitle = "hek")
+```
+
+## get direct targets
+```{r}
+hek_results <- read.delim(file="hek_ZFX_kovsControl_DESeq_expressed.txt", stringsAsFactors = FALSE)
+hek_results_sig <- hek_results[! is.na(hek_results$padj) & hek_results$padj < 0.05,]
+hek_results_direct_targets <- hek_results_sig[hek_results_sig$Gene %in% chip_targets_hek,]
+write.table(hek_results_direct_targets, file="hek_direct_targets.txt", quote=FALSE, sep="\t", row.names=FALSE, col.names=TRUE)
+```
